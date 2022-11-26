@@ -96,6 +96,8 @@ impl ConnectionConfig<()> for ()
 /// # Example
 /// 
 /// ```
+/// use lmc::{Options, QoS};
+/// 
 /// let mut opts = Options::new("client_id")
 ///     .enable_tls()
 ///     .expect("Failed to load native system TLS certificates");
@@ -527,8 +529,10 @@ mod tls {
         /// 
         /// ```
         /// use std::fs;
+        /// use lmc::Options;
+        /// use lmc::tls::CryptoBytes;
         /// 
-        /// let cert_bytes = fs::read("ca.pem").expect("Failed to load CA certificate bytes");
+        /// let cert_bytes = fs::read("test_data/ca.pem").expect("Failed to load CA certificate bytes");
         /// 
         /// let opts = Options::new("client_id")
         ///     .enable_tls_custom_ca_cert(CryptoBytes::Pem(&cert_bytes))

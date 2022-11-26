@@ -73,15 +73,17 @@ impl<'a> OptionsWithTls<'a>
     /// 
     /// ```
     /// use std::fs;
+    /// use lmc::Options;
+    /// use lmc::tls::CryptoBytes;
     /// 
-    /// let cert_bytes = fs::read("cert.pem").expect("Failed to load certificate bytes");
-    /// let pk_bytes = fs::read("private_key.pem").expect("Failed to load private key bytes");
+    /// let cert_bytes = fs::read("test_data/client.pem").expect("Failed to load certificate bytes");
+    /// let pk_bytes = fs::read("test_data/client_private.pem").expect("Failed to load private key bytes");
     /// 
     /// let mut opts = Options::new("client_id")
     ///     .enable_tls()
     ///     .expect("Failed to load the system's TLS certificates");
     /// 
-    /// opts.enable_tls_client_auth(CryptoBytes::Pem(cert_bytes), CryptoBytes::Pem(pk_bytes));
+    /// opts.enable_tls_client_auth(CryptoBytes::Pem(&cert_bytes), CryptoBytes::Pem(&pk_bytes));
     /// ```
     pub fn enable_tls_client_auth(&mut self, cert_bytes: CryptoBytes, pk_bytes: CryptoBytes) -> Result<&mut Self, CryptoError>
     {

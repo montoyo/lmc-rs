@@ -1,10 +1,13 @@
 [package]
 name = "lmc"
 version = "0.1.0"
-authors = ["Nicolas Barbotin <nicolas@barbot.in>"]
+authors = ["Nicolas \"montoyo\" Barbotin <nicolas@barbot.in>"]
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+readme = "README.md"
+repository = "https://github.com/montoyo/lmc-rs"
+license = "MIT OR Apache-2.0"
+keywords = ["mqtt", "client", "async", "iot"]
+categories = ["network-programming"]
 
 [features]
 tls = ["rustls", "rustls-native-certs", "rustls-pemfile", "webpki"]
@@ -21,6 +24,7 @@ features = ["net", "sync", "time", "macros", "rt"]
 
 [dev-dependencies]
 env_logger = "^0.9"
+tokio-test = "^0.4"
 
 ################### Optional TLS Dependencies ###################
 

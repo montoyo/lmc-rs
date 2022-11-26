@@ -37,7 +37,8 @@ Then, you can use the following code to get started. Note that this example assu
 ```rust
 use lmc::{Options, Client, QoS};
 
-fn main()
+#[tokio::main]
+async fn main()
 {
     //You can disable TLS by skipping `.enable_tls().unwrap()`
     let mut opts = Options::new("client_id").enable_tls().unwrap();
@@ -47,7 +48,8 @@ fn main()
     let (client, shutdown_handle) = Client::connect("localhost", opts).await.unwrap();
 
     //Subscribe to 'my_topic' using an unbounded Tokio MPSC channel
-    let subscription = client.subscribe_unbounded("my_topic", QoS::AtLeastOnce).await.unwrap();
+    let (subscription, sub_qos) = client.subscribe_unbounded("my_topic", QoS::AtLeastOnce).await.unwrap();
+    println!("Subscribed to topic with QoS {:?}", sub_qos);
     client.publish_qos_1("my_topic", b"it works!", false, true).await.unwrap();
 
     let msg = subscription.recv().await.expect("Failed to await message");
@@ -59,7 +61,8 @@ fn main()
 
 ## Philosophy
 
-TODO
+ - **Less dependencies:** Avoid using crates, unless it can improve performances. Make dependencies optional through features as often as possible.
+ - **Unsafe code:** Use unsafe code to improve performances, provided the unsafe code can be proven to be safe trivially.
 
 ## TODOs
 

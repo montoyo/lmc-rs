@@ -136,7 +136,7 @@ trait AddOffset
     /// 
     /// # Example
     /// 
-    /// ```
+    /// ```ignore
     /// let mut slice = [0, 1, 2, 3];
     /// let mut slice_ref = &mut slice;
     /// 

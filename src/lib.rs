@@ -6,6 +6,9 @@
 //! hostname (or IP address) together with [`Options`]:
 //! 
 //! ```
+//! # tokio_test::block_on(async {
+//! use lmc::{Options, Client, QoS};
+//! 
 //! let mut opts = Options::new("client_id")
 //!     .enable_tls()
 //!     .expect("Failed to load native system TLS certificates");
@@ -13,13 +16,16 @@
 //! opts.set_username("username")
 //!     .set_password(b"password");
 //! 
+//! # return; //We can't really test this in doctests
 //! let (client, shutdown_handle) = Client::connect("localhost", opts)
 //!     .await
 //!     .expect("Failed to connect to broker!");
 //! 
-//! let subscription = client.subscribe_unbounded("my_topic", QoS::AtLeastOnce)
+//! let (subscription, sub_qos) = client.subscribe_unbounded("my_topic", QoS::AtLeastOnce)
 //!     .await
 //!     .expect("Failed to subscribe to 'my_topic'");
+//! 
+//! println!("Subscribed to topic with QoS {:?}", sub_qos);
 //! 
 //! client.publish_qos_1("my_topic", b"it works!", false, true)
 //!     .await
@@ -29,6 +35,7 @@
 //! println!("Received {}", msg.payload_as_utf8().unwrap());
 //! 
 //! shutdown_handle.disconnect().await.expect("Could not disconnect gracefully");
+//! # });
 //! ```
 //! 
 //! # Publishing messages

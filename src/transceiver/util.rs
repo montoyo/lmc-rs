@@ -21,7 +21,7 @@ macro_rules! panic_in_test {
 /// 
 /// # Example
 /// 
-/// ```
+/// ```ignore
 /// struct A;
 /// struct B;
 /// 

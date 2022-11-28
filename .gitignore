@@ -15,3 +15,4 @@ test_data/ca.srl
 test_data/client.csr
 test_data/server.csr
 test_data/server.ext
+test_data/start.bat

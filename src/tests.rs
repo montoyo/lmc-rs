@@ -1,34 +1,18 @@
-use std::fs;
 use std::time::Duration;
 use tokio::time;
 
-use super::{Options, Client, QoS, PublishEvent, tls};
+use super::{Options, Client, QoS, PublishEvent, ClientShutdownHandle};
 
 fn init_test()
 {
     let _ = env_logger::builder()
-        //.is_test(true)
+        .is_test(true)
         .filter(Some("lmc"), log::LevelFilter::Debug)
         .try_init();
 }
 
-#[tokio::test]
-async fn test() -> Result<(), ()>
+async fn test_common(client: Client, shutdown_handle: ClientShutdownHandle)
 {
-    init_test();
-
-    let mut opts = Options::new("iot_broker")
-        .enable_tls_custom_ca_cert(tls::CryptoBytes::Pem(&fs::read("../iot_coordinator/data/ca.crt").unwrap()))
-        .unwrap();
-
-    opts.enable_tls_client_auth(tls::CryptoBytes::Pem(&fs::read("../IoT/iot_broker/iot_broker.crt").unwrap()), tls::CryptoBytes::Pem(&fs::read("../IoT/iot_broker/private_key.pem").unwrap()))
-        .unwrap()
-        .set_last_will("hello", b"this is not good", false, QoS::AtLeastOnce)
-        .set_keep_alive(10)
-        .set_clean_session()
-        .set_no_delay();
-    
-    let (client, shutdown_handle) = Client::connect("NiNiIoT-Broker.local", opts).await.unwrap();
     log::debug!("==> Connected! session_present={}", client.was_session_present());
 
     let (mut sub, sub_qos) = client.subscribe_lossy("hello", QoS::ExactlyOnce, 10).await.unwrap();
@@ -54,6 +38,44 @@ async fn test() -> Result<(), ()>
     let disconnect_result = shutdown_handle.disconnect().await.unwrap();
     assert_eq!(disconnect_result.disconnect_sent, true);
     assert_eq!(disconnect_result.clean, true);
+}
 
-    Ok(())
+#[cfg(feature = "tls")]
+#[tokio::test]
+async fn test_tls()
+{
+    use std::fs;
+    use super::tls;
+
+    init_test();
+
+    let mut opts = Options::new("lmc")
+        .enable_tls_custom_ca_cert(tls::CryptoBytes::Pem(&fs::read("./test_data/ca.pem").unwrap()))
+        .unwrap();
+
+    opts.enable_tls_client_auth(tls::CryptoBytes::Pem(&fs::read("./test_data/client.pem").unwrap()), tls::CryptoBytes::Pem(&fs::read("./test_data/client_private.pem").unwrap()))
+        .unwrap()
+        .set_last_will("hello", b"this is not good", false, QoS::AtLeastOnce)
+        .set_keep_alive(10)
+        .set_clean_session()
+        .set_no_delay();
+    
+    let (client, shutdown_handle) = Client::connect("localhost", opts).await.unwrap();
+    test_common(client, shutdown_handle).await;
+}
+
+#[tokio::test]
+async fn test_no_tls()
+{
+    init_test();
+
+    let mut opts = Options::new("lmc");
+
+    opts.set_last_will("hello", b"this is not good", false, QoS::AtLeastOnce)
+        .set_keep_alive(10)
+        .set_clean_session()
+        .set_no_delay();
+    
+    let (client, shutdown_handle) = Client::connect("localhost", opts).await.unwrap();
+    test_common(client, shutdown_handle).await;
 }

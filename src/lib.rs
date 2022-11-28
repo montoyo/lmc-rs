@@ -103,7 +103,6 @@ mod errors;
 mod shared;
 
 #[cfg(test)]
-#[cfg(feature = "tls")]
 mod tests;
 
 pub use errors::{ConnectError, PublishError, TryPublishError, SubscribeError, TimeoutKind, ServerConnectError};

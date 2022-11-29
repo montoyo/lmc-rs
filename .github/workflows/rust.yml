@@ -15,7 +15,7 @@ jobs:
 
     steps:
     - name: Setup mosquitto
-      run: apt-get -y install mosquitto
+      run: sudo apt-get -y install mosquitto
     - uses: actions/checkout@v3
     - name: Build
       run: cargo build --verbose

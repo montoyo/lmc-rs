@@ -15,10 +15,14 @@ jobs:
 
     steps:
     - name: Setup mosquitto
-      run: sudo apt-get -y install mosquitto
+      run: sudo apt-get -y install mosquitto && sudo systemctl stop mosquitto
     - name: Switch to Rust nightly
       run: rustup default nightly
     - uses: actions/checkout@v3
+    - uses: actions/cache@v3
+      with:
+        path: target
+        key: ${{ runner.os }}-target
     - name: Run tests
       run: |
         cd test_data

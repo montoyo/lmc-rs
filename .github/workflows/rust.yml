@@ -19,7 +19,10 @@ jobs:
     - name: Switch to Rust nightly
       run: rustup default nightly
     - uses: actions/checkout@v3
-    - name: Start mosquitto
-      run: cd test_data && mosquitto -c ./mosquitto.conf -d && sleep 1
     - name: Run tests
-      run: cargo test -F tls
+      run: |
+        cd test_data
+        mosquitto -c ./mosquitto_local.conf -d
+        sleep 1
+        ps -ef | grep mosquitto
+        cargo test -F tls

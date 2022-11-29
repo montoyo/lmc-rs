@@ -19,9 +19,7 @@ jobs:
     - name: Switch to Rust nightly
       run: rustup default nightly
     - uses: actions/checkout@v3
-    - name: Build
-      run: cargo build --verbose
     - name: Start mosquitto
-      run: cd test_data && mosquitto -c ./mosquitto.conf -d
+      run: cd test_data && mosquitto -c ./mosquitto.conf -d && sleep 1
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test -F tls

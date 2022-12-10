@@ -1,6 +1,8 @@
 use std::time::Duration;
 use tokio::time;
 
+mod mini_broker;
+
 use super::{Options, Client, QoS, PublishEvent, ClientShutdownHandle};
 
 fn init_test()

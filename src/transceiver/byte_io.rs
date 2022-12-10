@@ -45,6 +45,21 @@ impl<'a> ByteReader<'a>
         Self(bytes)
     }
 
+    /// Reads a single byte and returns it.
+    /// 
+    /// A [`PacketDecodeError`] is returned if the slice was empty.
+    pub fn read_u8(&mut self) -> Result<u8, PacketDecodeError>
+    {
+        if self.0.len() < 1 {
+            return Err(PacketDecodeError::ReachedEndUnexpectedly);
+        }
+
+        let ret = self.0[0];
+        self.0 = &self.0[1..];
+
+        return Ok(ret);
+    }
+
     /// Reads a big endian u16. This value needs to by converted into native byte
     /// order before being processed. See [`BigEndian`] for more information.
     /// 

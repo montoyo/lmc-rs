@@ -61,12 +61,15 @@ macro_rules! def_incoming_packets {
             $($name($type)),+
         }
 
-        $(
-            impl $type
-            {
-                pub const PACKET_TYPE: u8 = PacketType::$name as u8;
-            }
-        )+
+        #[doc(hidden)]
+        mod _packet_ids
+        {
+            $(
+                #[doc(hidden)]
+                #[allow(non_upper_case_globals)]
+                pub const $name: u8 = super::PacketType::$name as u8;
+            )+
+        }
 
         impl IncomingPacket {
             /// Attempts to parse the bytes from the specified [`ByteReader`] into a packet
@@ -74,7 +77,7 @@ macro_rules! def_incoming_packets {
             pub fn from_bytes(rd: &mut ByteReader, ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
             {
                 match ctrl_field.packet_type() {
-                    $(<$type>::PACKET_TYPE => <$type>::decode(rd, ctrl_field).map(Self::$name),)+
+                    $(_packet_ids::$name => <$type>::decode(rd, ctrl_field).map(Self::$name),)+
                     id => Err(PacketDecodeError::InvalidPacketId(id))
                 }
             }
@@ -106,6 +109,35 @@ def_incoming_packets! {
         PingResp(PingRespPacket)
     }
 }
+
+#[doc(hidden)]
+#[cfg(test)]
+mod test
+{
+    use super::*;
+
+    def_incoming_packets! {
+        pub enum IncomingPacket
+        {
+            Connect(IncomingConnectPacket),
+            Subscribe(IncomingSubscribePacket),
+            Publish(IncomingPublishPacket),
+            PubAck(PubAckPacket),
+            PubRec(PubRecPacket),
+            PubRel(PubRelPacket),
+            PubComp(PubCompPacket),
+            Unsubscribe(IncomingUnsubPacket),
+            PingReq(PingReqPacket),
+            Disconnect(DisconnectPacket)
+        }
+    }
+}
+
+/// An enumeration of all the packets that can possibly be received
+/// by an MQTT broker. This is only used in tests as LMC does not
+/// provide any broker implementation.
+#[cfg(test)]
+pub use test::IncomingPacket as IncomingBrokerPacket;
 
 fn encode_packet_size(mut sz: usize, dst: &mut [u8]) -> usize
 {
@@ -263,6 +295,7 @@ mod connect_flags
     pub const USER_NAME    : u8 = 128;
     pub const PASSWORD     : u8 = 64;
     pub const WILL_RETAIN  : u8 = 32;
+    pub const WILL_QOS_POS : u8 = 3;
     pub const WILL_FLAG    : u8 = 4;
     pub const CLEAN_SESSION: u8 = 2;
 }
@@ -328,7 +361,7 @@ impl<'a> Encode for ConnectPacket<'a>
 
         if let Some(will) = &self.will {
             flags |= connect_flags::WILL_FLAG;
-            flags |= (will.qos as u8) << 3;
+            flags |= (will.qos as u8) << connect_flags::WILL_QOS_POS;
 
             if will.retain {
                 flags |= connect_flags::WILL_RETAIN;
@@ -373,6 +406,71 @@ impl<'a> Encode for ConnectPacket<'a>
     }
 }
 
+/// Last will structure for test broker. Only available in tests.
+/// For more information regarding the last will, see [`LastWill`].
+#[cfg(test)]
+pub struct IncomingLastWill
+{
+    pub topic: String,
+    pub message: Vec<u8>,
+    pub retain: bool,
+    pub qos: QoS
+}
+
+#[cfg(test)]
+pub struct IncomingConnectPacket
+{
+    pub clean_session: bool,
+    pub keep_alive: u16,
+    pub client_id: String,
+    pub will: Option<IncomingLastWill>,
+    pub username: Option<String>,
+    pub password: Option<Vec<u8>>
+}
+
+#[cfg(test)]
+impl IncomingConnectPacket
+{
+    fn decode(rd: &mut ByteReader, ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
+    {
+        assert_eq!(ctrl_field.flags(), 0);
+
+        let hdr = rd.read_trivial::<ConnectHeader>()?;
+        assert_eq!(hdr.protocol_name_len.to_native(), 4);
+        assert_eq!(&hdr.protocol_name, b"MQTT");
+        assert_eq!(hdr.protocol_level, 4);
+
+        let client_id = rd.read_utf8()?.to_string();
+
+        let will = if (hdr.connect_flags & connect_flags::WILL_FLAG) == 0 {
+            None
+        } else {
+            let topic = rd.read_utf8()?.to_string();
+            let message = rd.read_byte_array()?.to_vec();
+
+            Some(IncomingLastWill {
+                topic, message,
+                retain: (hdr.connect_flags & connect_flags::WILL_RETAIN) != 0,
+                qos: match (hdr.connect_flags >> connect_flags::WILL_QOS_POS) & 3 {
+                    0 => QoS::AtMostOnce,
+                    1 => QoS::AtLeastOnce,
+                    2 => QoS::ExactlyOnce,
+                    _ => panic!()
+                }
+            })
+        };
+
+        let username = if (hdr.connect_flags & connect_flags::USER_NAME) == 0 { None } else { Some(rd.read_utf8()?.to_string()) };
+        let password = if (hdr.connect_flags & connect_flags::PASSWORD) == 0 { None } else { Some(rd.read_byte_array()?.to_vec()) };
+
+        Ok(IncomingConnectPacket {
+            clean_session: (hdr.connect_flags & connect_flags::CLEAN_SESSION) != 0,
+            keep_alive: hdr.keep_alive.to_native(),
+            client_id, will, username, password
+        })
+    }
+}
+
 /**************************** CONNACK  ****************************/
 
 #[repr(C, packed)]
@@ -402,6 +500,29 @@ impl ConnAckPacket
                 x => Err(ServerConnectError::Unknown(x))
             }
         ))
+    }
+}
+
+#[cfg(test)]
+impl Encode for ConnAckPacket
+{
+    fn compute_size(&self) -> usize { size_of::<ConnAckHeader>() }
+
+    fn encode(&self, wr: &mut ByteWriter) -> ControlField
+    {
+        let (ack_flags, return_code) = match self.0 {
+            Ok(x) => (if x { 1 } else { 0 }, 0),
+            Err(ServerConnectError::UnacceptableProtocolVersion) => (0, 1),
+            Err(ServerConnectError::IdentifierRejected)          => (0, 2),
+            Err(ServerConnectError::ServerUnavailable)           => (0, 3),
+            Err(ServerConnectError::BadUserNameOrPassword)       => (0, 4),
+            Err(ServerConnectError::NotAuthorized)               => (0, 5),
+            Err(ServerConnectError::Unknown(x))                  => (0, x),
+            Err(ServerConnectError::ProtocolError)               => panic!()
+        };
+
+        wr.write_trivial(&ConnAckHeader { ack_flags, return_code });
+        ControlField::from_type_and_flags(PacketType::ConnAck, 0)
     }
 }
 
@@ -693,8 +814,13 @@ fn test_incoming_pkt()
 
 /**************************** PUBACK, PUBREC, PUBREL, PUBCOMP, UNSUBACK  ****************************/
 
-macro_rules! def_simple_incoming_packet {
-    ($name:ident, $type:expr) => {
+macro_rules! if_out {
+    { in_out; $($tt:tt)+ } => { $($tt)+ };
+    { in; $($tt:tt)+ } => { #[cfg(test)] $($tt)+ };
+}
+
+macro_rules! def_simple_packet {
+    ($name:ident, $type:expr, flags = $flags:literal, direction = $dir:ident) => {
         pub struct $name
         {
             pub packet_id: u16
@@ -702,48 +828,44 @@ macro_rules! def_simple_incoming_packet {
 
         impl $name
         {
+            if_out! {
+                $dir;
+                pub fn new(packet_id: u16) -> Self
+                {
+                    Self { packet_id }
+                }
+            }
+
             fn decode(rd: &mut ByteReader, _ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
             {
                 rd.read_u16().map(|x| Self { packet_id: x.to_native() })
             }
         }
-    };
-}
 
-macro_rules! def_simple_bidir_packet {
-    ($name:ident, $type:expr, flags = $flags:literal) => {
-        def_simple_incoming_packet!($name, $type);
-
-        impl $name
-        {
-            pub fn new(packet_id: u16) -> Self
+        if_out! {
+            $dir;
+            impl Encode for $name
             {
-                Self { packet_id }
-            }
-        }
-
-        impl Encode for $name
-        {
-            fn compute_size(&self) -> usize
-            {
-                size_of::<u16>()
-            }
-
-            fn encode(&self, wr: &mut ByteWriter) -> ControlField
-            {
-                wr.write_u16(BigEndian::from_native(self.packet_id));
-                ControlField::from_type_and_flags($type, $flags)
+                fn compute_size(&self) -> usize
+                {
+                    size_of::<u16>()
+                }
+    
+                fn encode(&self, wr: &mut ByteWriter) -> ControlField
+                {
+                    wr.write_u16(BigEndian::from_native(self.packet_id));
+                    ControlField::from_type_and_flags($type, $flags)
+                }
             }
         }
     };
 }
 
-def_simple_bidir_packet!(PubAckPacket,  PacketType::PubAck,  flags = 0);
-def_simple_bidir_packet!(PubRecPacket,  PacketType::PubRec,  flags = 0);
-def_simple_bidir_packet!(PubRelPacket,  PacketType::PubRel,  flags = 2);
-def_simple_bidir_packet!(PubCompPacket, PacketType::PubComp, flags = 0);
-
-def_simple_incoming_packet!(UnsubAckPacket, PacketType::UnsubAck);
+def_simple_packet!(PubAckPacket,   PacketType::PubAck,   flags = 0, direction = in_out);
+def_simple_packet!(PubRecPacket,   PacketType::PubRec,   flags = 0, direction = in_out);
+def_simple_packet!(PubRelPacket,   PacketType::PubRel,   flags = 2, direction = in_out);
+def_simple_packet!(PubCompPacket,  PacketType::PubComp,  flags = 0, direction = in_out);
+def_simple_packet!(UnsubAckPacket, PacketType::UnsubAck, flags = 0, direction = in);
 
 /**************************** SUBSCRIBE  ****************************/
 
@@ -776,6 +898,41 @@ impl<'a> Encode for SubscribePacket<'a>
         }
 
         ControlField::from_type_and_flags(PacketType::Subscribe, 2)
+    }
+}
+
+#[cfg(test)]
+pub struct IncomingSubscribePacket
+{
+    pub packet_id: u16,
+    pub topics: Vec<(String, QoS)>
+}
+
+#[cfg(test)]
+impl IncomingSubscribePacket
+{
+    fn decode(rd: &mut ByteReader, ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
+    {
+        assert_eq!(ctrl_field.flags(), 2);
+
+        let mut ret = Self {
+            packet_id: rd.read_u16()?.to_native(),
+            topics: Vec::new()
+        };
+
+        while rd.remaining() > 0 {
+            let topic = rd.read_utf8()?.to_string();
+            let qos = match rd.read_u8()? {
+                0 => QoS::AtMostOnce,
+                1 => QoS::AtLeastOnce,
+                2 => QoS::ExactlyOnce,
+                _ => panic!()
+            };
+
+            ret.topics.push((topic, qos));
+        }
+
+        Ok(ret)
     }
 }
 
@@ -863,6 +1020,32 @@ impl SubAckPacket
     }
 }
 
+#[cfg(test)]
+impl Encode for SubAckPacket
+{
+    fn compute_size(&self) -> usize
+    {
+        match &self.sub_results {
+            SubscriptionResultList::Static { len, values: _ } => len + size_of::<u16>(),
+            SubscriptionResultList::Dynamic(x) => x.len() + size_of::<u16>()
+        }
+    }
+
+    fn encode(&self, wr: &mut ByteWriter) -> ControlField
+    {
+        wr.write_u16(BigEndian::from_native(self.packet_id));
+
+        for result in self.sub_results() {
+            match result {
+                Ok(qos) => drop(wr.write_u8(*qos as u8)),
+                Err(()) => drop(wr.write_u8(128))
+            }
+        }
+
+        ControlField::from_type_and_flags(PacketType::SubAck, 0)
+    }
+}
+
 /**************************** UNSUBSCRIBE  ****************************/
 
 pub struct UnsubscribePacket<'a>
@@ -896,6 +1079,33 @@ impl<'a> Encode for UnsubscribePacket<'a>
     }
 }
 
+#[cfg(test)]
+pub struct IncomingUnsubPacket
+{
+    pub packet_id: u16,
+    pub topics: Vec<String>
+}
+
+#[cfg(test)]
+impl IncomingUnsubPacket
+{
+    fn decode(rd: &mut ByteReader, ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
+    {
+        assert_eq!(ctrl_field.flags(), 2);
+
+        let mut ret = Self {
+            packet_id: rd.read_u16()?.to_native(),
+            topics: Vec::new()
+        };
+
+        while rd.remaining() > 0 {
+            ret.topics.push(rd.read_utf8()?.to_string());
+        }
+
+        Ok(ret)
+    }
+}
+
 /**************************** PINGREQ, DISCONNECT  ****************************/
 
 macro_rules! def_empty_outgoing_packet {
@@ -914,6 +1124,16 @@ macro_rules! def_empty_outgoing_packet {
                 ControlField::from_type_and_flags($type, 0)
             }
         }
+
+        #[cfg(test)]
+        impl $name
+        {
+            fn decode(rd: &mut ByteReader, ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
+            {
+                assert_eq!(ctrl_field.flags(), 0);
+                Ok(Self)
+            }
+        }
     };
 }
 
@@ -929,5 +1149,19 @@ impl PingRespPacket
     fn decode(_rd: &mut ByteReader, _ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
     {
         Ok(Self)
+    }
+}
+
+#[cfg(test)]
+impl Encode for PingRespPacket
+{
+    fn compute_size(&self) -> usize
+    {
+        0
+    }
+
+    fn encode(&self, _wr: &mut ByteWriter) -> ControlField
+    {
+        ControlField::from_type_and_flags(PacketType::PingResp, 0)
     }
 }

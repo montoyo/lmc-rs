@@ -1,8 +1,9 @@
 use std::io::{self, Read, Write};
+use std::ops::DerefMut;
 use std::sync::Arc;
+
 use tokio::net::TcpStream;
-use rustls::ClientConnection;
-use rustls::ClientConfig;
+use rustls::{ClientConfig, ConnectionCommon};
 use webpki::Error as BadCertError;
 
 #[cfg(feature = "dangerous_tls")]
@@ -116,21 +117,21 @@ impl<'a> Write for TryRWProxy<'a>
 }
 
 /// A [`TransportTrait`] that implements TLS over TCP.
-pub(super) struct Transport
+pub(super) struct Transport<T>
 {
     tcp: TcpStream,
-    tls: ClientConnection
+    tls: T
 }
 
-impl Transport
+impl<T> Transport<T>
 {
-    pub(super) fn new(tcp: TcpStream, tls: ClientConnection) -> Self
+    pub(super) fn new(tcp: TcpStream, tls: T) -> Self
     {
         Self { tcp, tls }
     }
 }
 
-impl TransportTrait for Transport
+impl<D, T: DerefMut<Target = ConnectionCommon<D>> + Send> TransportTrait for Transport<T>
 {
     fn wants(&self, _rd_hint: bool, _wr_hint: bool) -> WantedFlags
     {

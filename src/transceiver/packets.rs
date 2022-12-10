@@ -259,8 +259,7 @@ pub trait Encode
     /// for packets that would only be transmitted once, however the
     /// performance gain of using [`Box`] instead of [`Arc`] in this
     /// specific case is negligible, so this function is not used
-    /// anymore. I feel bad deleting it though...
-    #[deprecated = "The performance gain of using `Box` instead of `Arc` is negligible. Use `make_arc_packet` instead."]
+    /// anymore, except in tests.
     fn make_packet(&self) -> Box<[u8]>
     {
         unsafe {

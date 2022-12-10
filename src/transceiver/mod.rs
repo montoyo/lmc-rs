@@ -12,7 +12,7 @@ use tokio::task::{self, JoinHandle};
 use fxhash::FxHashMap;
 use log::{error, warn, debug};
 
-mod byte_io;
+pub mod byte_io;
 mod packet_reader;
 pub mod util;
 pub mod subscription;

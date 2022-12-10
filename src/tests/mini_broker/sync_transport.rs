@@ -3,10 +3,15 @@ use crate::transport::Transport;
 use std::io;
 use tokio::select;
 
-pub struct SyncTransport<T>(T);
+pub struct SyncTransport(Box<dyn Transport>);
 
-impl<T: Transport> SyncTransport<T>
+impl SyncTransport
 {
+    pub fn new<T: Transport + 'static>(transport: T) -> SyncTransport
+    {
+        SyncTransport(Box::new(transport))
+    }
+
     pub async fn write_fully(&mut self, mut data: &[u8]) -> io::Result<()>
     {
         while data.len() > 0 {

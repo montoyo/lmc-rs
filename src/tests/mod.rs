@@ -15,7 +15,6 @@ fn init_test()
 
     let _ = env_logger::builder()
         //.is_test(true)
-        .filter(Some("lmc"), log::LevelFilter::Debug)
         .try_init();
 }
 

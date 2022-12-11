@@ -57,27 +57,19 @@ impl ControlField
 macro_rules! def_incoming_packets {
     { $(#[$($attrs:tt)*])* pub enum IncomingPacket { $($name:ident($type:ty)),+ } } => {
         $(#[$($attrs)*])*
-        pub enum IncomingPacket {
+        pub enum IncomingPacket
+        {
             $($name($type)),+
         }
 
-        #[doc(hidden)]
-        mod _packet_ids
+        impl IncomingPacket
         {
-            $(
-                #[doc(hidden)]
-                #[allow(non_upper_case_globals)]
-                pub const $name: u8 = super::PacketType::$name as u8;
-            )+
-        }
-
-        impl IncomingPacket {
             /// Attempts to parse the bytes from the specified [`ByteReader`] into a packet
             /// struct that corresponds to the packet ID contained in the specified [`ControlField`].
             pub fn from_bytes(rd: &mut ByteReader, ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
             {
                 match ctrl_field.packet_type() {
-                    $(_packet_ids::$name => <$type>::decode(rd, ctrl_field).map(Self::$name),)+
+                    $(x if x == <$type>::packet_type() as u8 => <$type>::decode(rd, ctrl_field).map(Self::$name),)+
                     id => Err(PacketDecodeError::InvalidPacketId(id))
                 }
             }
@@ -86,10 +78,21 @@ macro_rules! def_incoming_packets {
             pub fn packet_type(&self) -> PacketType
             {
                 match self {
-                    $(Self::$name(_) => PacketType::$name),+
+                    $(Self::$name(_) => <$type>::packet_type()),+
                 }
             }
         }
+
+        #[allow(dead_code)]
+        #[doc(hidden)]
+        const fn _check_packet_types()
+        {
+            $(assert!(<$type>::packet_type() as u8 == PacketType::$name as u8);)+
+        }
+
+        #[allow(dead_code)]
+        #[doc(hidden)]
+        const _: () = _check_packet_types();
     };
 }
 
@@ -199,11 +202,19 @@ impl PacketContainer for Arc<[MaybeUninit<u8>]>
     }
 }
 
+/// A trait implemented by all packets. Simply associates
+/// a [`PacketType`] to the struct.
+pub trait Packet
+{
+    /// The type of packet that the implementing structure represents.
+    fn packet_type() -> PacketType;
+}
+
 /// A trait implemented by all outgoing packets. Provides the
 /// [`Encode::make_packet()`] and [`Encode::make_arc_packet()`]
 /// utility functions to build packets (= byte arrays) wrapped
 /// in [`Box`] and [`Arc`], respectively.
-pub trait Encode
+pub trait Encode: Packet
 {
     /// Should return the size, in bytes, needed to encode this packet.
     /// 
@@ -213,13 +224,13 @@ pub trait Encode
 
     /// Should convert the packet into raw bytes using the provided
     /// [`ByteWriter`], excluding the fixed header (control field
-    /// and packet size). Returns the control field that will be
-    /// prepended to the packet by the caller.
+    /// and packet size). Returns the flags in the control field that
+    /// will be prepended to the packet by the caller.
     /// 
     /// Note that this method should write the **exact** number of
     /// bytes specified by the return value of [`Encode::compute_size()`].
     /// If this is not the case, the caller will panic.
-    fn encode(&self, wr: &mut ByteWriter) -> ControlField;
+    fn encode(&self, wr: &mut ByteWriter) -> u8;
 
     /// Encodes the packet into raw bytes and wraps the resulting byte
     /// array into the specified [`PacketContainer`]. This function
@@ -235,10 +246,10 @@ pub trait Encode
         let mut ret = C::create(header_sz + content_sz);
         let bytes = ret.access_bytes();
         let mut wr = ByteWriter::new(&mut bytes[header_sz..]);
-        let ctrl_field = self.encode(&mut wr);
+        let flags = self.encode(&mut wr);
 
         wr.finish_and_check();
-        header[0] = ctrl_field.0;
+        header[0] = ControlField::from_type_and_flags(Self::packet_type(), flags).0;
         
         unsafe {
             //SAFETY:
@@ -327,6 +338,11 @@ fn array_size<T: AsRef<[u8]>>(a: T) -> usize
     size_of::<u16>() + a.as_ref().len()
 }
 
+impl<'a> Packet for ConnectPacket<'a>
+{
+    fn packet_type() -> PacketType { PacketType::Connect }
+}
+
 impl<'a> Encode for ConnectPacket<'a>
 {
     fn compute_size(&self) -> usize
@@ -349,7 +365,7 @@ impl<'a> Encode for ConnectPacket<'a>
         ret
     }
 
-    fn encode(&self, wr: &mut ByteWriter) -> ControlField
+    fn encode(&self, wr: &mut ByteWriter) -> u8
     {
         //Variable header
         let mut flags = 0;
@@ -401,7 +417,7 @@ impl<'a> Encode for ConnectPacket<'a>
             wr.write_bytes(x);
         }
 
-        ControlField::from_type_and_flags(PacketType::Connect, 0)
+        0
     }
 }
 
@@ -425,6 +441,12 @@ pub struct IncomingConnectPacket
     pub will: Option<IncomingLastWill>,
     pub username: Option<String>,
     pub password: Option<Vec<u8>>
+}
+
+#[cfg(test)]
+impl const Packet for IncomingConnectPacket
+{
+    fn packet_type() -> PacketType { PacketType::Connect }
 }
 
 #[cfg(test)]
@@ -482,6 +504,11 @@ struct ConnAckHeader
 
 pub struct ConnAckPacket(pub Result<bool, ServerConnectError>);
 
+impl const Packet for ConnAckPacket
+{
+    fn packet_type() -> PacketType { PacketType::ConnAck }
+}
+
 impl ConnAckPacket
 {
     fn decode(rd: &mut ByteReader, _ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
@@ -507,7 +534,7 @@ impl Encode for ConnAckPacket
 {
     fn compute_size(&self) -> usize { size_of::<ConnAckHeader>() }
 
-    fn encode(&self, wr: &mut ByteWriter) -> ControlField
+    fn encode(&self, wr: &mut ByteWriter) -> u8
     {
         let (ack_flags, return_code) = match self.0 {
             Ok(x) => (if x { 1 } else { 0 }, 0),
@@ -521,7 +548,7 @@ impl Encode for ConnAckPacket
         };
 
         wr.write_trivial(&ConnAckHeader { ack_flags, return_code });
-        ControlField::from_type_and_flags(PacketType::ConnAck, 0)
+        0
     }
 }
 
@@ -628,6 +655,11 @@ pub struct OutgoingPublishPacket<'a>
     pub payload: &'a [u8]
 }
 
+impl<'a> Packet for OutgoingPublishPacket<'a>
+{
+    fn packet_type() -> PacketType { PacketType::Publish }
+}
+
 impl<'a> Encode for OutgoingPublishPacket<'a>
 {
     fn compute_size(&self) -> usize
@@ -641,7 +673,7 @@ impl<'a> Encode for OutgoingPublishPacket<'a>
         ret + self.payload.len()
     }
 
-    fn encode(&self, wr: &mut ByteWriter) -> ControlField
+    fn encode(&self, wr: &mut ByteWriter) -> u8
     {
         wr.write_bytes(self.topic);
 
@@ -650,7 +682,7 @@ impl<'a> Encode for OutgoingPublishPacket<'a>
         }
 
         wr.write_bytes_no_len(self.payload);
-        ControlField::from_type_and_flags(PacketType::Publish, self.flags.into_inner())
+        self.flags.into_inner()
     }
 }
 
@@ -684,6 +716,11 @@ struct InternalPublishHeader
 {
     topic_len: usize,
     info: PublishPacketInfo
+}
+
+impl const Packet for IncomingPublishPacket
+{
+    fn packet_type() -> PacketType { PacketType::Publish }
 }
 
 impl IncomingPublishPacket
@@ -836,6 +873,11 @@ macro_rules! def_simple_packet {
             pub packet_id: u16
         }
 
+        impl const Packet for $name
+        {
+            fn packet_type() -> PacketType { $type }
+        }
+
         impl $name
         {
             if_out! {
@@ -861,10 +903,10 @@ macro_rules! def_simple_packet {
                     size_of::<u16>()
                 }
     
-                fn encode(&self, wr: &mut ByteWriter) -> ControlField
+                fn encode(&self, wr: &mut ByteWriter) -> u8
                 {
                     wr.write_u16(BigEndian::from_native(self.packet_id));
-                    ControlField::from_type_and_flags($type, $flags)
+                    $flags
                 }
             }
         }
@@ -885,6 +927,11 @@ pub struct SubscribePacket<'a>
     pub topics: &'a [(&'a str, QoS)]
 }
 
+impl<'a> Packet for SubscribePacket<'a>
+{
+    fn packet_type() -> PacketType { PacketType::Subscribe }
+}
+
 impl<'a> Encode for SubscribePacket<'a>
 {
     fn compute_size(&self) -> usize
@@ -899,7 +946,7 @@ impl<'a> Encode for SubscribePacket<'a>
         ret
     }
 
-    fn encode(&self, wr: &mut ByteWriter) -> ControlField
+    fn encode(&self, wr: &mut ByteWriter) -> u8
     {
         wr.write_u16(BigEndian::from_native(self.packet_id));
 
@@ -907,7 +954,7 @@ impl<'a> Encode for SubscribePacket<'a>
             wr.write_bytes(topic).write_u8(qos as u8);
         }
 
-        ControlField::from_type_and_flags(PacketType::Subscribe, 2)
+        2
     }
 }
 
@@ -916,6 +963,12 @@ pub struct IncomingSubscribePacket
 {
     pub packet_id: u16,
     pub topics: Vec<(String, QoS)>
+}
+
+#[cfg(test)]
+impl const Packet for IncomingSubscribePacket
+{
+    fn packet_type() -> PacketType { PacketType::Subscribe }
 }
 
 #[cfg(test)]
@@ -977,6 +1030,11 @@ pub struct SubAckPacket
 {
     pub packet_id: u16,
     sub_results: SubscriptionResultList
+}
+
+impl const Packet for SubAckPacket
+{
+    fn packet_type() -> PacketType { PacketType::SubAck }
 }
 
 impl SubAckPacket
@@ -1056,7 +1114,7 @@ impl Encode for SubAckPacket
         }
     }
 
-    fn encode(&self, wr: &mut ByteWriter) -> ControlField
+    fn encode(&self, wr: &mut ByteWriter) -> u8
     {
         wr.write_u16(BigEndian::from_native(self.packet_id));
 
@@ -1067,7 +1125,7 @@ impl Encode for SubAckPacket
             }
         }
 
-        ControlField::from_type_and_flags(PacketType::SubAck, 0)
+        0
     }
 }
 
@@ -1077,6 +1135,11 @@ pub struct UnsubscribePacket<'a>
 {
     pub packet_id: u16,
     pub topics: &'a [&'a str]
+}
+
+impl<'a> Packet for UnsubscribePacket<'a>
+{
+    fn packet_type() -> PacketType { PacketType::Unsubscribe }
 }
 
 impl<'a> Encode for UnsubscribePacket<'a>
@@ -1092,7 +1155,7 @@ impl<'a> Encode for UnsubscribePacket<'a>
         ret
     }
 
-    fn encode(&self, wr: &mut ByteWriter) -> ControlField
+    fn encode(&self, wr: &mut ByteWriter) -> u8
     {
         wr.write_u16(BigEndian::from_native(self.packet_id));
 
@@ -1100,7 +1163,7 @@ impl<'a> Encode for UnsubscribePacket<'a>
             wr.write_bytes(topic);
         }
 
-        ControlField::from_type_and_flags(PacketType::Unsubscribe, 2)
+        2
     }
 }
 
@@ -1109,6 +1172,12 @@ pub struct IncomingUnsubPacket
 {
     pub packet_id: u16,
     pub topics: Vec<String>
+}
+
+#[cfg(test)]
+impl const Packet for IncomingUnsubPacket
+{
+    fn packet_type() -> PacketType { PacketType::Unsubscribe }
 }
 
 #[cfg(test)]
@@ -1137,6 +1206,11 @@ macro_rules! def_empty_outgoing_packet {
     ($name:ident, $type:expr) => {
         pub struct $name;
 
+        impl const Packet for $name
+        {
+            fn packet_type() -> PacketType { $type }
+        }
+
         impl Encode for $name
         {
             fn compute_size(&self) -> usize
@@ -1144,9 +1218,9 @@ macro_rules! def_empty_outgoing_packet {
                 0
             }
 
-            fn encode(&self, _wr: &mut ByteWriter) -> ControlField
+            fn encode(&self, _wr: &mut ByteWriter) -> u8
             {
-                ControlField::from_type_and_flags($type, 0)
+                0
             }
         }
 
@@ -1169,6 +1243,11 @@ def_empty_outgoing_packet!(DisconnectPacket, PacketType::Disconnect);
 
 pub struct PingRespPacket;
 
+impl const Packet for PingRespPacket
+{
+    fn packet_type() -> PacketType { PacketType::PingResp }
+}
+
 impl PingRespPacket
 {
     fn decode(_rd: &mut ByteReader, _ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
@@ -1185,8 +1264,8 @@ impl Encode for PingRespPacket
         0
     }
 
-    fn encode(&self, _wr: &mut ByteWriter) -> ControlField
+    fn encode(&self, _wr: &mut ByteWriter) -> u8
     {
-        ControlField::from_type_and_flags(PacketType::PingResp, 0)
+        0
     }
 }

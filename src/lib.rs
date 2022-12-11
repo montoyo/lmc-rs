@@ -80,6 +80,7 @@
 
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
+#![feature(const_trait_impl)]
 
 use std::future::Future;
 use std::sync::Arc;

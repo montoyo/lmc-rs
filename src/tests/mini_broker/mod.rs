@@ -15,7 +15,7 @@ use std::future::Future;
 use tokio::net::TcpListener;
 use tokio::time;
 use rand::{thread_rng, Rng};
-use log::debug;
+use log::{debug, trace};
 use parking_lot::Mutex;
 
 mod sync_transport;
@@ -96,7 +96,7 @@ impl MiniBroker
                 };
 
                 let cpy = *data.lock();
-                debug!("Currently at {}:{}, waiting for {}", cpy.location.file(), cpy.location.line(), cpy.state);
+                debug!("Currently at {}:{}, state={}", cpy.location.file(), cpy.location.line(), cpy.state);
             }
         });
 
@@ -149,6 +149,8 @@ impl MiniBroker
 
     pub async fn send<P: Encode>(&mut self, pkt: &P)
     {
+        trace!("S==>C {:?}", P::packet_type());
+
         let data = pkt.make_packet();
         self.transport.write_fully(&data).await.unwrap();
     }
@@ -166,6 +168,8 @@ impl MiniBroker
         let ret = IncomingBrokerPacket::from_bytes(&mut rd, ControlField(data[0])).unwrap();
 
         assert!(rd.remaining() <= 0, "Did not read {:?} packet in its entirety", ret.packet_type());
+        trace!("S<==C {:?}", ret.packet_type());
+
         Ok(ret)
     }
 
@@ -250,7 +254,7 @@ impl MiniBroker
         match self.recv(true).await {
             Ok(IncomingBrokerPacket::Disconnect(_)) => {},
             Ok(x) => panic!("Expected a disconnect packet, got a {:?} packet instead", x.packet_type()),
-            Err(_) => {}
+            Err(_) => {} //Clean disconnect is annoying to handle so we're just ignoring errors here...
         }
     }
 }

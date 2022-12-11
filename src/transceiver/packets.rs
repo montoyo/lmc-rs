@@ -772,6 +772,17 @@ impl IncomingPublishPacket
             Ok(IncomingPublishPacket(uninit_arc.assume_init()))
         }
     }
+
+    #[cfg(test)]
+    pub fn to_outgoing<'a>(&'a self, qos: QoS, retain: bool, packet_id: u16) -> OutgoingPublishPacket<'a>
+    {
+        OutgoingPublishPacket {
+            flags: PublishFlags::new(false, qos, retain),
+            topic: self.topic(),
+            packet_id,
+            payload: self.payload()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -970,6 +981,21 @@ pub struct SubAckPacket
 
 impl SubAckPacket
 {
+    #[cfg(test)]
+    pub fn new(packet_id: u16, results: &[SubscriptionResult]) -> Self
+    {
+        let sub_results = if results.len() <= MAX_STATIC_SUBS {
+            let mut values = [Err(()); MAX_STATIC_SUBS];
+            values[..results.len()].copy_from_slice(results);
+
+            SubscriptionResultList::Static { len: results.len(), values }
+        } else {
+            SubscriptionResultList::Dynamic(results.to_vec())
+        };
+
+        Self { packet_id, sub_results }
+    }
+
     pub fn sub_results(&self) -> &[SubscriptionResult]
     {
         match &self.sub_results {

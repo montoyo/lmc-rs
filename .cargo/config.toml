@@ -1,0 +1,3 @@
+[build]
+# Needed for `console-subscriber`. AFAIK it does not affect the software using lmc.
+rustflags = ["--cfg", "tokio_unstable"]

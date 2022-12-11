@@ -14,7 +14,7 @@ impl SyncTransport
 
     pub async fn write_fully(&mut self, mut data: &[u8]) -> io::Result<()>
     {
-        while data.len() > 0 {
+        loop {
             let written = match self.0.write(data, false) {
                 Ok(x) => if x <= 0 {
                     return Err(io::ErrorKind::ConnectionReset.into());
@@ -34,33 +34,30 @@ impl SyncTransport
                 self.0.flush()?;
             }
 
-            loop {
-                let wants = self.0.wants(false, data.len() > 0);
-                if !wants.read && !wants.write {
-                    break;
-                }
+            let wants = self.0.wants(false, data.len() > 0);
+            if !wants.read && !wants.write {
+                assert!(data.len() <= 0, "!wants.read && !wants.write, but there's still some data to be sent");
+                return Ok(());
+            }
 
-                select! {
-                    err = self.0.ready_for().read(), if wants.read => {
-                        err?;
-                        self.0.pre_read()?;
-                    },
-                    err = self.0.ready_for().write(), if wants.write => {
-                        err?;
-                        self.0.pre_write()?;
-                    }
+            select! {
+                err = self.0.ready_for().read(), if wants.read => {
+                    err?;
+                    self.0.pre_read()?;
+                },
+                err = self.0.ready_for().write(), if wants.write => {
+                    err?;
+                    self.0.pre_write()?;
                 }
             }
         }
-
-        Ok(())
     }
 
     async fn read_fully(&mut self, dst: &mut [u8]) -> io::Result<()>
     {
         let mut pos = 0;
 
-        while pos < dst.len() {
+        loop {
             let read = match self.0.read(dst) {
                 Ok(x) => if x <= 0 {
                     return Err(io::ErrorKind::ConnectionReset.into());
@@ -76,26 +73,23 @@ impl SyncTransport
 
             pos += read;
 
-            loop {
-                let wants = self.0.wants(pos < dst.len(), false);
-                if !wants.read && !wants.write {
-                    break;
-                }
+            let wants = self.0.wants(pos < dst.len(), false);
+            if !wants.read && !wants.write {
+                assert!(pos >= dst.len(), "!wants.read && !wants.write, but there's still some data to be read");
+                return Ok(());
+            }
 
-                select! {
-                    err = self.0.ready_for().read(), if wants.read => {
-                        err?;
-                        self.0.pre_read()?;
-                    },
-                    err = self.0.ready_for().write(), if wants.write => {
-                        err?;
-                        self.0.pre_write()?;
-                    }
+            select! {
+                err = self.0.ready_for().read(), if wants.read => {
+                    err?;
+                    self.0.pre_read()?;
+                },
+                err = self.0.ready_for().write(), if wants.write => {
+                    err?;
+                    self.0.pre_write()?;
                 }
             }
         }
-
-        Ok(())
     }
 
     pub async fn read_packet(&mut self) -> io::Result<Vec<u8>>

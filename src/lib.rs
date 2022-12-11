@@ -299,6 +299,7 @@ impl Client
             .next()
             .ok_or(ConnectError::HostnameNotFound)?;
 
+        log::debug!("Connecting to {:?}", addr);
         let socket = (if addr.is_ipv6() { TcpSocket::new_v6() } else { TcpSocket::new_v4() }).map_err(ConnectError::IoError)?;
 
         let stream = time::timeout(options.tcp_connect_timeout, socket.connect(addr)).await

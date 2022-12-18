@@ -707,23 +707,29 @@ impl Transceiver
                         self.queue_internal_packet(self.ping_req.clone(), false)?;
                     }
 
-                    while let Some(to) = self.timeout_queue.front() {
-                        if to.t.elapsed() >= self.packet_resend_delay {
-                            let to = self.timeout_queue.pop_front().unwrap();
+                    let timeout_count = self.timeout_queue.len();
 
-                            if to.packet_id.ty == PacketType::Subscribe {
-                                if let Some(sub) = self.pending_subs.get(&to.packet_id.id) {
-                                    //Special treatment for the Subscribe packet as we store it in a different hash map
-                                    debug!("Re-sending Subscribe packet with ID {}", to.packet_id.id);
-                                    self.queue_internal_packet(sub.packet.clone(), false)?;
-                                    self.timeout_queue.push_back(to.refresh());
-                                }
-                            } else {
-                                if let Some(pkt) = self.pending_packets.get(&to.packet_id) {
-                                    debug!("Re-sending {:?} packet with ID {}", to.packet_id.ty, to.packet_id.id);
-                                    self.queue_internal_packet(pkt.clone(), to.packet_id.ty == PacketType::Publish)?;
-                                    self.timeout_queue.push_back(to.refresh());
-                                }
+                    for _ in 0..timeout_count {
+                        let to = self.timeout_queue.front().unwrap();
+                        
+                        if to.t.elapsed() < self.packet_resend_delay {
+                            break;
+                        }
+
+                        let to = self.timeout_queue.pop_front().unwrap();
+
+                        if to.packet_id.ty == PacketType::Subscribe {
+                            if let Some(sub) = self.pending_subs.get(&to.packet_id.id) {
+                                //Special treatment for the Subscribe packet as we store it in a different hash map
+                                debug!("Re-sending Subscribe packet with ID {}", to.packet_id.id);
+                                self.queue_internal_packet(sub.packet.clone(), false)?;
+                                self.timeout_queue.push_back(to.refresh());
+                            }
+                        } else {
+                            if let Some(pkt) = self.pending_packets.get(&to.packet_id) {
+                                debug!("Re-sending {:?} packet with ID {}", to.packet_id.ty, to.packet_id.id);
+                                self.queue_internal_packet(pkt.clone(), to.packet_id.ty == PacketType::Publish)?;
+                                self.timeout_queue.push_back(to.refresh());
                             }
                         }
                     }

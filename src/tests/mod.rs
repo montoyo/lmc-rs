@@ -1,7 +1,9 @@
 use std::time::Duration;
+use std::{env, io};
+
 use tokio::net::TcpListener;
 use tokio::{time, join};
-use log::debug;
+use log::{debug, LevelFilter};
 
 mod mini_broker;
 use mini_broker::MiniBroker;
@@ -13,9 +15,21 @@ fn init_test()
 {
     console_subscriber::init();
 
-    let _ = env_logger::builder()
-        //.is_test(true)
-        .try_init();
+    let mut logger_cfg = env_logger::builder();
+
+    if !env::args_os().any(|arg| arg == "--nocapture") {
+        logger_cfg.is_test(true);
+    }
+
+    if env::var_os("RUST_LOG").map(|x| x.is_empty()).unwrap_or(true) {
+        logger_cfg.filter_module("lmc", LevelFilter::Debug);
+    }
+
+    if env::var_os("RUST_BACKTRACE").map(|x| x.is_empty()).unwrap_or(true) {
+        env::set_var("RUST_BACKTRACE", "1");
+    }
+
+    let _ = logger_cfg.try_init();
 }
 
 async fn test_common(client: Client, shutdown_handle: ClientShutdownHandle, topic: &str)
@@ -38,7 +52,7 @@ async fn test_common(client: Client, shutdown_handle: ClientShutdownHandle, topi
     client.publish_qos_1(topic, b"byebye1", false, true).await.unwrap();
     //We will only observe the Unsub at this point
 
-    time::sleep(Duration::from_secs(5)).await;
+    time::sleep(Duration::from_secs(1)).await;
     client.publish_qos_0(topic, b"byebye2", false).await.unwrap();
     drop(client);
 
@@ -87,38 +101,34 @@ async fn test_no_tls()
     test_common(client, shutdown_handle, "test_no_tls").await;
 }
 
-async fn basic_test_broker(listener: TcpListener)
+async fn basic_test_broker(listener: TcpListener) -> io::Result<()>
 {
-    let mut broker = MiniBroker::new_tcp(listener).await;
+    let mut broker = MiniBroker::new_tcp(listener).await?;
 
-    broker.expect().connect().await;
-    broker.send(&ConnAckPacket(Ok(false))).await;
+    broker.expect().connect().await?;
+    broker.send(&ConnAckPacket(Ok(false))).await?;
 
-    let sub = broker.expect().subscribe().await;
+    let sub = broker.expect().subscribe().await?;
     let sub_qos = sub.topics[0].1;
-    broker.send(&SubAckPacket::new(sub.packet_id, &[Ok(sub_qos)])).await;
+    broker.send(&SubAckPacket::new(sub.packet_id, &[Ok(sub_qos)])).await?;
 
-    let msg1 = broker.recv_message().await;
+    let msg1 = broker.recv_message().await?;
     let msg2 = msg1.to_outgoing(sub_qos, false, 1);
-    broker.send_message(&msg2).await;
+    broker.send_message(&msg2).await?;
 
-    broker.expect().pingreq().await;
-    broker.send(&PingRespPacket).await;
+    broker.expect().pingreq().await?;
+    broker.send(&PingRespPacket).await?;
 
-    debug!("Sent PingResp");
-
-    let msg3 = broker.recv_message().await;
-    debug!("Got message");
+    let msg3 = broker.recv_message().await?;
     let msg4 = msg3.to_outgoing(sub_qos, false, 2);
-    broker.send_message(&msg4).await;
-    debug!("Send Message");
+    broker.send_message(&msg4).await?;
 
-    let unsub = broker.expect().unsub().await;
-    debug!("Got unsub");
-    broker.send(&UnsubAckPacket::new(unsub.packet_id)).await;
+    let unsub = broker.expect().unsub().await?;
+    broker.send(&UnsubAckPacket::new(unsub.packet_id)).await?;
 
-    broker.recv_message().await;
+    broker.recv_message().await?;
     broker.expect_disconnect().await;
+    Ok(())
 }
 
 #[tokio::test]
@@ -126,21 +136,27 @@ async fn test_mini_broker()
 {
     init_test();
 
-    let (listener, port) = MiniBroker::create_listener().await;
+    let (listener, port) = MiniBroker::create_listener().await.unwrap();
     let mut opts = Options::new("test_no_tls");
 
     opts.set_last_will("test_no_tls", b"this is not good", false, QoS::AtLeastOnce)
-        .set_keep_alive(10)
+        .set_keep_alive(8)
         .set_clean_session()
-        .set_no_delay()
+        .set_no_delay() //Required for tests with `MiniBroker`
         .disable_ipv6()
+        .set_packets_resend_delay(Duration::from_secs(2)) //Required for tests with `MiniBroker`
         .set_default_port(port);
     
-    let broker_task = tokio::spawn(basic_test_broker(listener));
+    let broker_task = basic_test_broker(listener);
     let client_task = async move {
         let (client, shutdown_handle) = Client::connect("localhost", opts).await.unwrap();
         test_common(client, shutdown_handle, "test_no_tls").await;
+        debug!("Client test task finished successfully!");
     };
 
-    join!(broker_task, client_task).0.unwrap();
+    let (result, _) = join!(broker_task, client_task);
+
+    if let Err(err) = result {
+        panic!("Broker task failed: {:?}", err);
+    }
 }

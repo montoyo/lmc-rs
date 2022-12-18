@@ -1,21 +1,36 @@
 use crate::transport::Transport;
+use super::tracing::TracingUtility;
 
 use std::io;
-use tokio::select;
+use std::time::Duration;
 
-pub struct SyncTransport(Box<dyn Transport>);
+use tokio::select;
+use tokio::time;
+
+pub struct SyncTransport
+{
+    t: Box<dyn Transport>,
+    tracing_utility: TracingUtility
+}
+
+const K_BYTES: &'static str = "transport_bytes";
+const K_PACKET: &'static str = "transport_packets";
+const LOOP_COUNT: &'static [&'static str] = &["loop 0", "loop 1", "loop 2", "loop 3", "loop 4", "loop 5", "loop 6", "loop 7", "loop 8", "loop 9"];
 
 impl SyncTransport
 {
-    pub fn new<T: Transport + 'static>(transport: T) -> SyncTransport
+    pub fn new<T: Transport + 'static>(transport: T, tracing_utility: TracingUtility) -> Self
     {
-        SyncTransport(Box::new(transport))
+        Self {
+            t: Box::new(transport),
+            tracing_utility
+        }
     }
 
     pub async fn write_fully(&mut self, mut data: &[u8]) -> io::Result<()>
     {
         loop {
-            let written = match self.0.write(data, false) {
+            let written = match self.t.write(data, false) {
                 Ok(x) => if x <= 0 {
                     return Err(io::ErrorKind::ConnectionReset.into());
                 } else {
@@ -31,24 +46,27 @@ impl SyncTransport
             data = &data[written..];
 
             if data.len() <= 0 {
-                self.0.flush()?;
+                self.t.flush()?;
             }
 
-            let wants = self.0.wants(false, data.len() > 0);
+            let wants = self.t.wants(false, data.len() > 0);
             if !wants.read && !wants.write {
                 assert!(data.len() <= 0, "!wants.read && !wants.write, but there's still some data to be sent");
                 return Ok(());
             }
 
+            let timeout = time::sleep(Duration::from_millis(100));
+
             select! {
-                err = self.0.ready_for().read(), if wants.read => {
+                err = self.t.ready_for().read(), if wants.read => {
                     err?;
-                    self.0.pre_read()?;
+                    self.t.pre_read()?;
                 },
-                err = self.0.ready_for().write(), if wants.write => {
+                err = self.t.ready_for().write(), if wants.write => {
                     err?;
-                    self.0.pre_write()?;
-                }
+                    self.t.pre_write()?;
+                },
+                _ = timeout => {}
             }
         }
     }
@@ -56,9 +74,13 @@ impl SyncTransport
     async fn read_fully(&mut self, dst: &mut [u8]) -> io::Result<()>
     {
         let mut pos = 0;
+        let mut counter = 0;
 
         loop {
-            let read = match self.0.read(dst) {
+            self.tracing_utility.update_state(K_BYTES, LOOP_COUNT[counter]);
+            counter = (counter + 1) % LOOP_COUNT.len();
+
+            let read = match self.t.read(dst) {
                 Ok(x) => if x <= 0 {
                     return Err(io::ErrorKind::ConnectionReset.into());
                 } else {
@@ -73,21 +95,56 @@ impl SyncTransport
 
             pos += read;
 
-            let wants = self.0.wants(pos < dst.len(), false);
+            let wants = self.t.wants(pos < dst.len(), false);
             if !wants.read && !wants.write {
                 assert!(pos >= dst.len(), "!wants.read && !wants.write, but there's still some data to be read");
                 return Ok(());
             }
 
+            let timeout = time::sleep(Duration::from_millis(100));
+
             select! {
-                err = self.0.ready_for().read(), if wants.read => {
+                err = self.t.ready_for().read(), if wants.read => {
                     err?;
-                    self.0.pre_read()?;
+                    self.t.pre_read()?;
                 },
-                err = self.0.ready_for().write(), if wants.write => {
+                err = self.t.ready_for().write(), if wants.write => {
                     err?;
-                    self.0.pre_write()?;
-                }
+                    self.t.pre_write()?;
+                },
+                _ = timeout => {}
+            }
+        }
+    }
+
+    pub async fn drop_byte(&mut self) -> io::Result<bool>
+    {
+        let mut trash = [0u8];
+
+        loop {
+            match self.t.read(&mut trash) {
+                Ok(x) => return Ok(x <= 0),
+                Err(err) if err.kind() != io::ErrorKind::WouldBlock => return Err(err),
+                Err(_would_block) => {}
+            }
+
+            let wants = self.t.wants(true, false);
+            if !wants.read && !wants.write {
+                panic!("!wants.read && !wants.write, but there's still some data to be read");
+            }
+
+            let timeout = time::sleep(Duration::from_millis(100));
+
+            select! {
+                err = self.t.ready_for().read(), if wants.read => {
+                    err?;
+                    self.t.pre_read()?;
+                },
+                err = self.t.ready_for().write(), if wants.write => {
+                    err?;
+                    self.t.pre_write()?;
+                },
+                _ = timeout => {}
             }
         }
     }
@@ -95,7 +152,9 @@ impl SyncTransport
     pub async fn read_packet(&mut self) -> io::Result<Vec<u8>>
     {
         let mut header = [0u8; 2];
+        self.tracing_utility.update_state(K_PACKET, "awaiting packet header");
         self.read_fully(&mut header).await?;
+        self.tracing_utility.update_state(K_PACKET, "got header");
 
         let mut sz = 0usize;
         let mut shift = 0;
@@ -112,6 +171,7 @@ impl SyncTransport
             }
 
             shift += 7;
+            self.tracing_utility.update_state(K_PACKET, "awaiting size byte");
             self.read_fully(&mut header[1..2]).await?;
         }
 
@@ -123,7 +183,9 @@ impl SyncTransport
         ret.resize(sz + 1, 0);
         ret[0] = header[0]; //Control field
 
+        self.tracing_utility.update_state(K_PACKET, "reading remaining packet bytes");
         self.read_fully(&mut ret[1..]).await?;
+        self.tracing_utility.update_state(K_PACKET, "packet ready");
         return Ok(ret);
     }
 }

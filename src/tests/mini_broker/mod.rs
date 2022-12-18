@@ -1,5 +1,5 @@
 use crate::QoS;
-use crate::transport::TcpTransport;
+use crate::transport::{Transport, TcpTransport};
 use crate::transceiver::packets::*;
 use crate::transceiver::byte_io::ByteReader;
 
@@ -9,47 +9,24 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use std::panic::Location;
 use std::sync::Arc;
-use std::thread;
 use std::future::Future;
 
 use tokio::net::TcpListener;
 use tokio::time;
 use rand::{thread_rng, Rng};
 use log::{debug, trace};
-use parking_lot::Mutex;
 
 mod sync_transport;
+mod tracing;
+
 use sync_transport::SyncTransport;
-
-#[derive(Clone, Copy)]
-pub struct BlockInfo
-{
-    location: &'static Location<'static>,
-    state: &'static str   
-}
-
-impl BlockInfo
-{
-    fn new() -> Self
-    {
-        Self {
-            location: Location::caller(),
-            state: "init"
-        }
-    }
-
-    fn update(&mut self, location: &'static Location<'static>, state: &'static str)
-    {
-        self.location = location;
-        self.state = state;
-    }
-}
+use tracing::{TracingUtility, KeyedTracingUtility};
 
 pub struct MiniBroker
 {
     transport: SyncTransport,
     pending_packets: VecDeque<IncomingBrokerPacket>,
-    location: Arc<Mutex<BlockInfo>>,
+    tracing_utility: KeyedTracingUtility,
 
     #[allow(dead_code)]
     listener: TcpListener
@@ -60,7 +37,7 @@ pub struct MiniBroker
 
 impl MiniBroker
 {
-    pub async fn create_listener() -> (TcpListener, u16)
+    pub async fn create_listener() -> io::Result<(TcpListener, u16)>
     {
         let mut rng = thread_rng();
         let mut addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 0);
@@ -70,65 +47,51 @@ impl MiniBroker
             debug!("Trying port {}...", addr.port());
 
             match TcpListener::bind(addr).await {
-                Ok(x) => return (x, addr.port()),
+                Ok(x) => return Ok((x, addr.port())),
                 Err(err) => match err.kind() {
                     io::ErrorKind::AddrInUse => {},
                     io::ErrorKind::PermissionDenied => {},
-                    _ => panic!("Could not listen: {:?}", err)
+                    _ => return Err(err)
                 }
             }
         }
     }
 
-    fn new(transport: SyncTransport, listener: TcpListener) -> Self
+    pub fn new<T: Transport + 'static>(transport: T, listener: TcpListener) -> Self
     {
-        let location = Arc::new(Mutex::new(BlockInfo::new()));
-        let location_clone = Arc::downgrade(&location);
-        debug!("Got client!");
-
-        thread::spawn(move || {
-            loop {
-                thread::sleep(Duration::from_secs(10));
-
-                let data = match location_clone.upgrade() {
-                    Some(x) => x,
-                    None => break
-                };
-
-                let cpy = *data.lock();
-                debug!("Currently at {}:{}, state={}", cpy.location.file(), cpy.location.line(), cpy.state);
-            }
-        });
+        let tracing_utility = TracingUtility::spawn();
 
         MiniBroker {
-            transport,
+            transport: SyncTransport::new(transport, tracing_utility.clone()),
             pending_packets: VecDeque::new(),
-            location,
+            tracing_utility: tracing_utility.with_key("broker_task"),
             listener
         }
     }
 
-    pub async fn new_tcp(listener: TcpListener) -> Self
+    pub async fn new_tcp(listener: TcpListener) -> io::Result<Self>
     {
-        let (stream, _) = listener.accept().await.unwrap();
-        Self::new(SyncTransport::new(TcpTransport::new(stream)), listener)
+        let (stream, _) = listener.accept().await?;
+        stream.set_nodelay(true)?;
+
+        Ok(Self::new(TcpTransport::new(stream), listener))
     }
 
     #[cfg(feature = "tls")]
-    pub async fn new_tls(listener: TcpListener) -> MiniBroker
+    pub async fn new_tls(listener: TcpListener) -> io::Result<Self>
     {
         use crate::tls::Transport as TlsTransport;
         use rustls::{ServerConfig, PrivateKey, Certificate, ServerConnection};
         use std::fs;
 
-        let server_cert_bytes = fs::read("test_data/server.pem").unwrap();
-        let server_key_bytes = fs::read("test_data/server_private.pem").unwrap();
+        let server_cert_bytes = fs::read("test_data/server.pem")?;
+        let server_key_bytes = fs::read("test_data/server_private.pem")?;
 
         let mut server_cert_reader = io::BufReader::new(server_cert_bytes.as_slice());
         let mut server_key_reader = io::BufReader::new(server_key_bytes.as_slice());
 
-        let cert_chain = rustls_pemfile::certs(&mut server_cert_reader).unwrap().into_iter().map(Certificate).collect::<Vec<_>>();
-        let private_key = match rustls_pemfile::read_one(&mut server_key_reader).unwrap().unwrap() {
+        let cert_chain = rustls_pemfile::certs(&mut server_cert_reader)?.into_iter().map(Certificate).collect::<Vec<_>>();
+        let private_key = match rustls_pemfile::read_one(&mut server_key_reader)?.unwrap() {
             rustls_pemfile::Item::ECKey(der)    => PrivateKey(der),
             rustls_pemfile::Item::PKCS8Key(der) => PrivateKey(der),
             rustls_pemfile::Item::RSAKey(der)   => PrivateKey(der),
@@ -141,18 +104,21 @@ impl MiniBroker
             .with_single_cert(cert_chain, private_key).unwrap();
             
         let tls_conn = ServerConnection::new(Arc::new(tls_cfg)).unwrap();
-        let (stream, _) = listener.accept().await.unwrap();
-        let transport = TlsTransport::new(stream, tls_conn);
+        let (stream, _) = listener.accept().await?;
+        stream.set_nodelay(true)?;
 
-        Self::new(SyncTransport::new(transport), listener)
+        let transport = TlsTransport::new(stream, tls_conn);
+        Ok(Self::new(transport, listener))
     }
 
-    pub async fn send<P: Encode>(&mut self, pkt: &P)
+    pub async fn send<P: Encode>(&mut self, pkt: &P) -> io::Result<()>
     {
         trace!("S==>C {:?}", P::packet_type());
 
         let data = pkt.make_packet();
-        self.transport.write_fully(&data).await.unwrap();
+        self.transport.write_fully(&data).await?;
+
+        Ok(())
     }
 
     pub async fn recv(&mut self, use_pending: bool) -> io::Result<IncomingBrokerPacket>
@@ -174,85 +140,101 @@ impl MiniBroker
     }
 
     #[track_caller]
-    pub fn recv_message(&mut self) -> impl Future<Output = IncomingPublishPacket> + '_
+    pub fn recv_message(&mut self) -> impl Future<Output = io::Result<IncomingPublishPacket>> + '_
     {
-        self.location.lock().update(Location::caller(), "recv_message");
+        self.tracing_utility.trace("recv_message", Location::caller());
         self.recv_message_priv()
     }
 
-    async fn recv_message_priv(&mut self) -> IncomingPublishPacket
+    async fn recv_message_priv(&mut self) -> io::Result<IncomingPublishPacket>
     {
-        self.location.lock().state = "rx PUBLISH";
-        let ret = ExpectOrEnqueue(self).publish().await;
+        self.tracing_utility.update_state("rx PUBLISH");
+        let ret = self.expect_or_enqueue_no_track().publish().await?;
         let info = ret.info();
         let qos = info.flags.qos();
 
         if qos == QoS::AtLeastOnce {
-            self.location.lock().state = "tx PUBACK";
-            self.send(&PubAckPacket::new(info.packet_id)).await;
+            self.tracing_utility.update_state("tx PUBACK");
+            self.send(&PubAckPacket::new(info.packet_id)).await?;
         } else if qos == QoS::ExactlyOnce {
-            self.location.lock().state = "tx PUBREC";
-            self.send(&PubRecPacket::new(info.packet_id)).await;
+            self.tracing_utility.update_state("tx PUBREC");
+            self.send(&PubRecPacket::new(info.packet_id)).await?;
 
-            self.location.lock().state = "rx PUBREL";
-            let rel = ExpectOrEnqueue(self).pubrel().await;
+            self.tracing_utility.update_state("rx PUBREL");
+            let rel = self.expect_or_enqueue_no_track().pubrel().await?;
             assert_eq!(rel.packet_id, info.packet_id);
 
-            self.location.lock().state = "tx PUBCOMP";
-            self.send(&PubCompPacket::new(info.packet_id)).await;
+            self.tracing_utility.update_state("tx PUBCOMP");
+            self.send(&PubCompPacket::new(info.packet_id)).await?;
         }
 
-        ret
+        Ok(ret)
     }
 
     #[track_caller]
-    pub fn send_message<'a>(&'a mut self, msg: &'a OutgoingPublishPacket<'a>) -> impl Future<Output = ()> + 'a
+    pub fn send_message<'a>(&'a mut self, msg: &'a OutgoingPublishPacket<'a>) -> impl Future<Output = io::Result<()>> + 'a
     {
-        self.location.lock().update(Location::caller(), "send_message");
+        self.tracing_utility.trace("send_message", Location::caller());
         self.send_message_priv(msg)
     }
 
-    async fn send_message_priv(&mut self, msg: &OutgoingPublishPacket<'_>)
+    async fn send_message_priv(&mut self, msg: &OutgoingPublishPacket<'_>) -> io::Result<()>
     {
-        self.location.lock().state = "tx PUBLISH";
-        self.send(msg).await;
+        self.tracing_utility.update_state("tx PUBLISH");
+        self.send(msg).await?;
 
         if msg.flags.qos() == QoS::AtLeastOnce {
-            self.location.lock().state = "rx PUBACK";
-            let ack = ExpectOrEnqueue(self).puback().await;
+            self.tracing_utility.update_state("rx PUBACK");
+            let ack = self.expect_or_enqueue_no_track().puback().await?;
             assert_eq!(msg.packet_id, ack.packet_id);
         } else if msg.flags.qos() == QoS::ExactlyOnce {
-            self.location.lock().state = "rx PUBREC";
-            let rec = ExpectOrEnqueue(self).pubrec().await;
+            self.tracing_utility.update_state("rx PUBREC");
+            let rec = self.expect_or_enqueue_no_track().pubrec().await?;
             assert_eq!(msg.packet_id, rec.packet_id);
 
-            self.location.lock().state = "tx PUBREL";
-            self.send(&PubRelPacket::new(msg.packet_id)).await;
+            self.tracing_utility.update_state("tx PUBREL");
+            self.send(&PubRelPacket::new(msg.packet_id)).await?;
 
-            self.location.lock().state = "rx PUBCOMP";
-            let comp = ExpectOrEnqueue(self).pubcomp().await;
+            self.tracing_utility.update_state("rx PUBCOMP");
+            let comp = self.expect_or_enqueue_no_track().pubcomp().await?;
             assert_eq!(msg.packet_id, comp.packet_id);
         }
+
+        Ok(())
     }
 
     #[track_caller]
     pub fn expect<'a>(&'a mut self) -> Expect<'a>
     {
-        self.location.lock().update(Location::caller(), "expecting");
+        self.tracing_utility.trace("expecting", Location::caller());
         Expect(self)
     }
     
     #[track_caller]
     pub fn expect_or_enqueue<'a>(&'a mut self) -> ExpectOrEnqueue<'a>
     {
-        self.location.lock().update(Location::caller(), "expecting_or_enqueue");
+        self.tracing_utility.trace("expecting_or_enqueue", Location::caller());
+        ExpectOrEnqueue(self)
+    }
+
+    fn expect_or_enqueue_no_track<'a>(&'a mut self) -> ExpectOrEnqueue<'a>
+    {
         ExpectOrEnqueue(self)
     }
 
     pub async fn expect_disconnect(&mut self)
     {
         match self.recv(true).await {
-            Ok(IncomingBrokerPacket::Disconnect(_)) => {},
+            Ok(IncomingBrokerPacket::Disconnect(_)) => {
+                let result = time::timeout(Duration::from_secs(10), self.transport.drop_byte()).await;
+
+                match result {
+                    Ok(Ok(true))  => {}, //Disconnected
+                    Ok(Ok(false)) => panic!("Unexpected bytes after DISCONNECT packet."),
+                    Ok(Err(err))  => panic!("Error while waiting for the socket to close: {:?}", err),
+                    Err(_tiemout) => panic!("Timed out waiting for the socket to close")
+                }
+            },
             Ok(x) => panic!("Expected a disconnect packet, got a {:?} packet instead", x.packet_type()),
             Err(_) => {} //Clean disconnect is annoying to handle so we're just ignoring errors here...
         }
@@ -275,10 +257,10 @@ macro_rules! generate_expect
         impl<'a> Expect<'a>
         {
             $(
-                pub async fn $f(self) -> $t
+                pub async fn $f(self) -> io::Result<$t>
                 {
-                    match self.0.recv(true).await.unwrap() {
-                        IncomingBrokerPacket::$v(x) => x,
+                    match self.0.recv(true).await? {
+                        IncomingBrokerPacket::$v(x) => Ok(x),
                         x => panic!(concat!("Broker expected a ", stringify!($v), " packet, but got a {:?} packet instead!"), x.packet_type())
                     }
                 }
@@ -288,12 +270,12 @@ macro_rules! generate_expect
         impl<'a> ExpectOrEnqueue<'a>
         {
             $(
-                pub async fn $f(self) -> $t
+                pub async fn $f(self) -> io::Result<$t>
                 {
                     let task = async move {
                         loop {
-                            match self.0.recv(false).await.unwrap() {
-                                IncomingBrokerPacket::$v(x) => return x,
+                            match self.0.recv(false).await? {
+                                IncomingBrokerPacket::$v(x) => return Ok(x),
                                 x => self.0.pending_packets.push_back(x)
                             }
                         }

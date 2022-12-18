@@ -204,6 +204,7 @@ impl PacketContainer for Arc<[MaybeUninit<u8>]>
 
 /// A trait implemented by all packets. Simply associates
 /// a [`PacketType`] to the struct.
+#[const_trait]
 pub trait Packet
 {
     /// The type of packet that the implementing structure represents.

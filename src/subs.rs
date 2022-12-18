@@ -13,7 +13,7 @@ use super::transceiver::commands::{Command, UnsubCommand, UnsubKind};
 /// anymore, unless of course [`Hold::leak()`] is called.
 /// 
 /// In any case, this can be bypassed by explicitely calling
-/// [`super::Client::unsubscribe()`].
+/// [`Client::unsubscribe()`](super::Client::unsubscribe()).
 pub struct Hold
 {
     shared: Arc<ClientShared>,
@@ -36,7 +36,8 @@ impl Hold
     /// Leaks the subscription object, preventing the transceiver task from
     /// unsubscribing to the topic forever.
     /// 
-    /// This can still be bypassed by explicitely calling [`super::Client::unsubscribe()`].
+    /// This can still be bypassed by explicitely calling
+    /// [`Client::unsubscribe()`](super::Client::unsubscribe()).
     pub fn leak(mut self)
     {
         self.leaked = true;
@@ -65,7 +66,7 @@ impl Drop for Hold
 /// unsubscribe from the corresponding topic.
 /// 
 /// However, it will still be possible to unsubscribe from the topic manually using
-/// [`super::Client::unsubscribe()`].
+/// [`Client::unsubscribe()`](super::Client::unsubscribe()).
 pub struct Callback
 {
     cmd_queue: mpsc::Sender<Command>,
@@ -86,7 +87,8 @@ impl Callback
     }
 
     /// Removes the callback from the susbcription.
-    /// To completely unsubscribe from a topic, use [`super::Client::unsubscribe()`].
+    /// To completely unsubscribe from a topic, use
+    /// [`Client::unsubscribe()`](super::Client::unsubscribe()).
     pub async fn remove_callback(self)
     {
         let cmd = UnsubCommand { topic: self.topic, kind: UnsubKind::FastCallback(self.id) };

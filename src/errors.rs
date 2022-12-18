@@ -65,7 +65,7 @@ pub enum ConnectError
     InvalidHostname,
 
     /// A TLS error occurred while trying to establish a secure
-    /// connection. See [`TlsError`].
+    /// connection. See [`rustls::Error`].
     #[cfg(feature = "tls")]
     TlsError(rustls::Error),
 
@@ -80,7 +80,7 @@ pub enum ConnectError
     /// Either the DNS query returned with no results, or the
     /// specified hostname does not have an IP address compatible
     /// with the Internet Protocol (IP) versions selected in
-    /// [`super::options::OptionsT`].
+    /// [`Options`](crate::options::OptionsT).
     HostnameNotFound,
 
     /// One of the connection operation timed out. The value of
@@ -88,7 +88,7 @@ pub enum ConnectError
     /// timed out.
     /// 
     /// Note that all of these timeouts can be configured in
-    /// [`super::options::OptionsT`].
+    /// [`Options`](crate::options::OptionsT).
     Timeout(TimeoutKind),
 
     /// This variant should never occur. It means that the client's
@@ -102,22 +102,22 @@ pub enum ConnectError
 }
 
 /// An enumeration specifying what went wrong while trying to publish
-/// a message using any of [`super::Client`]'s `publish` functions.
+/// a message using any of [`Client`](crate::Client)'s `publish` functions.
 #[derive(Debug)]
 pub enum PublishError
 {
     /// The client's transceiver task terminated and thus the message
     /// might not have been transmitted to the broker.
     /// 
-    /// This happens when [`super::Client::disconnect()`] or
-    /// [`super::ClientShutdownHandle::disconnect()`] is called before
-    /// the message could have been successfully transmitted by the client
-    /// or acknowledged by the server.
+    /// This happens when [`Client::disconnect()`](super::Client::disconnect()) or
+    /// [`ClientShutdownHandle::disconnect()`](super::ClientShutdownHandle::disconnect())
+    /// is called before the message could have been successfully transmitted by the
+    /// client or acknowledged by the server.
     TransceiverTaskTerminated
 }
 
 /// An enumeration specifying what went wrong while trying to publish
-/// a message using [`super::Client::try_publish`].
+/// a message using [`Client::try_publish()`](super::Client::try_publish()).
 #[derive(Debug)]
 pub enum TryPublishError
 {
@@ -127,15 +127,15 @@ pub enum TryPublishError
     /// The client's transceiver task terminated and thus the message
     /// might not have been transmitted to the broker.
     /// 
-    /// This happens when [`super::Client::disconnect()`] or
-    /// [`super::ClientShutdownHandle::disconnect()`] is called before
-    /// the message could have been successfully transmitted by the client
-    /// or acknowledged by the server.
+    /// This happens when [`Client::disconnect()`](super::Client::disconnect()) or
+    /// [`ClientShutdownHandle::disconnect()`](super::ClientShutdownHandle::disconnect())
+    /// is called before the message could have been successfully transmitted by the
+    /// client or acknowledged by the server.
     TransceiverTaskTerminated
 }
 
 /// An enumeration specifying what went wrong while trying to subscribe
-/// to a topic using any of [`super::Client`]'s `subscribe` functions.
+/// to a topic using any of [`Client`](super::Client)'s `subscribe` functions.
 #[derive(Debug)]
 pub enum SubscribeError
 {
@@ -146,9 +146,9 @@ pub enum SubscribeError
     /// The client's transceiver task terminated before the client
     /// could subscribe to a topic.
     /// 
-    /// This happens when [`super::Client::disconnect()`] or
-    /// [`super::ClientShutdownHandle::disconnect()`] is called before
-    /// or while trying to subscribe to a topic.
+    /// This happens when [`Client::disconnect()`](super::Client::disconnect()) or
+    /// [`ClientShutdownHandle::disconnect()`](super::ClientShutdownHandle::disconnect())
+    /// is called before or while trying to subscribe to a topic.
     TransceiverTaskTerminated
 }
 

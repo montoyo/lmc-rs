@@ -65,7 +65,7 @@ impl IpVersionSet
     }
 }
 
-/// A trait to wrap the creation of [`Transport`]. Mainly used for TLS purposes.
+/// A trait to wrap the creation of transports. Mainly used for TLS purposes.
 pub trait ConnectionConfig<T>
 {
     /// Creates a "connection" tied to the specified hostname. Does nothing
@@ -91,22 +91,22 @@ impl ConnectionConfig<()> for ()
 }
 
 /// A struct containing all the MQTT protocol & implementation settings. To create this
-/// structure with its default values, use [`Options::new`].
+/// structure with its default values, use [`Options::new()`](OptionsT::new()).
 /// 
 /// # Example
 /// 
-/// ```
-/// use lmc::{Options, QoS};
-/// 
-/// let mut opts = Options::new("client_id")
-///     .enable_tls()
-///     .expect("Failed to load native system TLS certificates");
-///     
-/// opts.set_last_will("status", b"unexpected_disconnect", true, QoS::AtLeastOnce)
-///     .set_keep_alive(10)
-///     .set_clean_session()
-///     .set_no_delay();
-/// ```
+#[cfg_attr(feature = "tls", doc = r##"```
+use lmc::{Options, QoS};
+
+let mut opts = Options::new("client_id")
+    .enable_tls()
+    .expect("Failed to load native system TLS certificates");
+    
+opts.set_last_will("status", b"unexpected_disconnect", true, QoS::AtLeastOnce)
+    .set_keep_alive(10)
+    .set_clean_session()
+    .set_no_delay();
+```"##)]
 pub struct OptionsT<'a, T>
 {
     /// Whether to establish a persistent session or not. If this is set to `true`,
@@ -202,7 +202,7 @@ pub struct OptionsT<'a, T>
     default_port_changed: bool
 }
 
-/// A flavour of [`OptionsT`] with TLS disabled.
+/// Options with TLS disabled. See [`OptionsT`] for documentation.
 pub type Options<'a> = OptionsT<'a, ()>;
 
 impl<'a> Options<'a>
@@ -527,17 +527,17 @@ mod tls {
         /// 
         /// # Example
         /// 
-        /// ```
-        /// use std::fs;
-        /// use lmc::Options;
-        /// use lmc::tls::CryptoBytes;
-        /// 
-        /// let cert_bytes = fs::read("test_data/ca.pem").expect("Failed to load CA certificate bytes");
-        /// 
-        /// let opts = Options::new("client_id")
-        ///     .enable_tls_custom_ca_cert(CryptoBytes::Pem(&cert_bytes))
-        ///     .expect("Failed to load the specified TLS certificate");
-        /// ```
+        #[cfg_attr(feature = "tls", doc = r##"```
+use std::fs;
+use lmc::Options;
+use lmc::tls::CryptoBytes;
+
+let cert_bytes = fs::read("test_data/ca.pem").expect("Failed to load CA certificate bytes");
+
+let opts = Options::new("client_id")
+    .enable_tls_custom_ca_cert(CryptoBytes::Pem(&cert_bytes))
+    .expect("Failed to load the specified TLS certificate");
+```"##)]
         pub fn enable_tls_custom_ca_cert(self, ca_cert_bytes: CryptoBytes) -> Result<OptionsWithTls<'a>, CryptoError>
         {
             let mut store = RootCertStore::empty();

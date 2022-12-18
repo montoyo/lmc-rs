@@ -1,3 +1,7 @@
+<p align="center">
+  <img width="300" height="300" src="./logo.svg">
+</p>
+
 # LMC - A Lightweight MQTT Client for Rust
 
 LMC is a MQTT client implementation designed to be small (the "active" code fits in less than 1k lines, including documentation), minimize

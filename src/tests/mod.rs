@@ -1,5 +1,6 @@
 use std::time::Duration;
 use std::{env, io};
+use std::sync::Once;
 
 use tokio::net::TcpListener;
 use tokio::{time, join};
@@ -11,25 +12,29 @@ use mini_broker::MiniBroker;
 use super::{Options, Client, QoS, PublishEvent, ClientShutdownHandle};
 use super::transceiver::packets::*;
 
+static TEST_INIT: Once = Once::new();
+
 fn init_test()
 {
-    console_subscriber::init();
+    TEST_INIT.call_once(|| {
+        console_subscriber::init();
 
-    let mut logger_cfg = env_logger::builder();
-
-    if !env::args_os().any(|arg| arg == "--nocapture") {
-        logger_cfg.is_test(true);
-    }
-
-    if env::var_os("RUST_LOG").map(|x| x.is_empty()).unwrap_or(true) {
-        logger_cfg.filter_module("lmc", LevelFilter::Debug);
-    }
-
-    if env::var_os("RUST_BACKTRACE").map(|x| x.is_empty()).unwrap_or(true) {
-        env::set_var("RUST_BACKTRACE", "1");
-    }
-
-    let _ = logger_cfg.try_init();
+        let mut logger_cfg = env_logger::builder();
+    
+        if !env::args_os().any(|arg| arg == "--nocapture") {
+            logger_cfg.is_test(true);
+        }
+    
+        if env::var_os("RUST_LOG").map(|x| x.is_empty()).unwrap_or(true) {
+            logger_cfg.filter_module("lmc", LevelFilter::Debug);
+        }
+    
+        if env::var_os("RUST_BACKTRACE").map(|x| x.is_empty()).unwrap_or(true) {
+            env::set_var("RUST_BACKTRACE", "1");
+        }
+    
+        let _ = logger_cfg.try_init();
+    });
 }
 
 async fn test_common(client: Client, shutdown_handle: ClientShutdownHandle, topic: &str)

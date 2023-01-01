@@ -13,14 +13,16 @@
                     "test",
                     "--no-run",
                     "--lib",
-                    "--package=lmc"
+                    "--package=lmc",
+                    "-F",
+                    "tls"
                 ],
                 "filter": {
                     "name": "lmc",
                     "kind": "lib"
                 }
             },
-            "args": ["tests::test_mini_broker", "--", "--nocapture"],
+            "args": ["tests::simple::test_mb_tls", "--", "--nocapture"],
             "cwd": "${workspaceFolder}"
         }
     ]

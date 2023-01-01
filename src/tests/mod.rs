@@ -2,9 +2,8 @@ use std::time::Duration;
 use std::{env, io};
 use std::sync::Once;
 
-use tokio::net::TcpListener;
 use tokio::{time, join};
-use log::{debug, LevelFilter};
+use log::{debug, error, LevelFilter};
 
 mod mini_broker;
 use mini_broker::MiniBroker;
@@ -42,14 +41,14 @@ macro_rules! def_tests
     {
         $name:ident:
         async fn client_fn($client:ident: Client, $shutdown_handle:ident: ClientShutdownHandle, $topic:ident: &str) $client_fn:block
-        async fn broker_fn($listener:ident: TcpListener) -> io::Result<()> $broker_fn:block
+        async fn broker_fn(mut $broker:ident: MiniBroker) -> io::Result<()> $broker_fn:block
     } =>
     {
         mod $name
         {
             use super::*;
             async fn client_fn($client: Client, $shutdown_handle: ClientShutdownHandle, $topic: &str) $client_fn
-            async fn broker_fn($listener: TcpListener) -> io::Result<()> $broker_fn
+            async fn broker_fn(mut $broker: MiniBroker) -> io::Result<()> $broker_fn
 
             #[tokio::test]
             async fn test_no_tls()
@@ -72,8 +71,8 @@ macro_rules! def_tests
             #[tokio::test]
             async fn test_tls()
             {
+                use crate::tls;
                 use std::fs;
-                use super::super::tls;
 
                 init_test();
 
@@ -110,18 +109,84 @@ macro_rules! def_tests
                     .set_packets_resend_delay(Duration::from_secs(2)) //Required for tests with `MiniBroker`
                     .set_default_port(port);
                 
-                let broker_task = broker_fn(listener);
+                let broker_task = async move {
+                    let ret = match MiniBroker::new_tcp(listener).await {
+                        Ok(broker) => broker_fn(broker).await,
+                        Err(err) => Err(err)
+                    };
+
+                    match ret {
+                        Ok(()) => {
+                            debug!("Broker task finished successfully!");
+                            true
+                        },
+                        Err(err) => {
+                            error!("Broker task failed: {:?}", err);
+                            false
+                        }
+                    }
+                };
+
                 let client_task = async move {
                     let (client, shutdown_handle) = Client::connect("localhost", opts).await.unwrap();
                     client_fn(client, shutdown_handle, test_name).await;
                     debug!("Client test task finished successfully!");
                 };
 
-                let (result, _) = join!(broker_task, client_task);
+                let (broker_ok, _) = join!(broker_task, client_task);
+                assert!(broker_ok, "Broker task failed.");
+            }
 
-                if let Err(err) = result {
-                    panic!("Broker task failed: {:?}", err);
-                }
+            #[cfg(feature = "tls")]
+            #[tokio::test]
+            async fn test_mb_tls()
+            {
+                use crate::tls;
+                use std::fs;
+
+                init_test();
+
+                let (listener, port) = MiniBroker::create_listener().await.unwrap();
+                let test_name = concat!(stringify!($name), "_mb_tls");
+
+                let mut opts = Options::new(test_name)
+                    .enable_tls_custom_ca_cert(tls::CryptoBytes::Pem(&fs::read("./test_data/ca.pem").unwrap()))
+                    .unwrap();
+
+                opts.set_last_will(test_name, b"this is not good", false, QoS::AtLeastOnce)
+                    .set_keep_alive(8)
+                    .set_clean_session()
+                    .set_no_delay() //Required for tests with `MiniBroker`
+                    .disable_ipv6()
+                    .set_packets_resend_delay(Duration::from_secs(2)) //Required for tests with `MiniBroker`
+                    .set_default_port(port);
+                
+                let broker_task = async move {
+                    let ret = match MiniBroker::new_tls(listener).await {
+                        Ok(broker) => broker_fn(broker).await,
+                        Err(err) => Err(err)
+                    };
+
+                    match ret {
+                        Ok(()) => {
+                            debug!("Broker task finished successfully!");
+                            true
+                        },
+                        Err(err) => {
+                            error!("Broker task failed: {:?}", err);
+                            false
+                        }
+                    }
+                };
+
+                let client_task = async move {
+                    let (client, shutdown_handle) = Client::connect("localhost", opts).await.unwrap();
+                    client_fn(client, shutdown_handle, test_name).await;
+                    debug!("Client test task finished successfully!");
+                };
+
+                let (broker_ok, _) = join!(broker_task, client_task);
+                assert!(broker_ok, "Broker task failed.");
             }
         }
     };
@@ -159,10 +224,8 @@ def_tests! {
         assert_eq!(disconnect_result.clean, true);
     }
 
-    async fn broker_fn(listener: TcpListener) -> io::Result<()>
+    async fn broker_fn(mut broker: MiniBroker) -> io::Result<()>
     {
-        let mut broker = MiniBroker::new_tcp(listener).await?;
-
         broker.expect().connect().await?;
         broker.send(&ConnAckPacket(Ok(false))).await?;
     

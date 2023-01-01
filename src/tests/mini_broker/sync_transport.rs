@@ -30,16 +30,20 @@ impl SyncTransport
     pub async fn write_fully(&mut self, mut data: &[u8]) -> io::Result<()>
     {
         loop {
-            let written = match self.t.write(data, false) {
-                Ok(x) => if x <= 0 {
-                    return Err(io::ErrorKind::ConnectionReset.into());
-                } else {
-                    x
-                },
-                Err(err) => if err.kind() == io::ErrorKind::WouldBlock {
-                    0
-                } else {
-                    return Err(err);
+            let written = if data.len() <= 0 {
+                0
+            } else {
+                match self.t.write(data, false) {
+                    Ok(x) => if x <= 0 {
+                        return Err(io::ErrorKind::ConnectionReset.into());
+                    } else {
+                        x
+                    },
+                    Err(err) => if err.kind() == io::ErrorKind::WouldBlock {
+                        0
+                    } else {
+                        return Err(err);
+                    }
                 }
             };
 
@@ -52,6 +56,10 @@ impl SyncTransport
             let wants = self.t.wants(false, data.len() > 0);
             if !wants.read && !wants.write {
                 assert!(data.len() <= 0, "!wants.read && !wants.write, but there's still some data to be sent");
+                return Ok(());
+            }
+
+            if data.len() <= 0 && !wants.write {
                 return Ok(());
             }
 
@@ -73,6 +81,10 @@ impl SyncTransport
 
     async fn read_fully(&mut self, dst: &mut [u8]) -> io::Result<()>
     {
+        if dst.len() <= 0 {
+            return Ok(());
+        }
+
         let mut pos = 0;
         let mut counter = 0;
 
@@ -80,7 +92,7 @@ impl SyncTransport
             self.tracing_utility.update_state(K_BYTES, LOOP_COUNT[counter]);
             counter = (counter + 1) % LOOP_COUNT.len();
 
-            let read = match self.t.read(dst) {
+            let read = match self.t.read(&mut dst[pos..]) {
                 Ok(x) => if x <= 0 {
                     return Err(io::ErrorKind::ConnectionReset.into());
                 } else {
@@ -95,13 +107,13 @@ impl SyncTransport
 
             pos += read;
 
-            let wants = self.t.wants(pos < dst.len(), false);
-            if !wants.read && !wants.write {
-                assert!(pos >= dst.len(), "!wants.read && !wants.write, but there's still some data to be read");
+            if pos >= dst.len() {
                 return Ok(());
             }
 
+            let wants = self.t.wants(true, false);
             let timeout = time::sleep(Duration::from_millis(100));
+            assert!(wants.read || wants.write, "!wants.read && !wants.write, but there's still some data to be read");
 
             select! {
                 err = self.t.ready_for().read(), if wants.read => {
@@ -129,11 +141,8 @@ impl SyncTransport
             }
 
             let wants = self.t.wants(true, false);
-            if !wants.read && !wants.write {
-                panic!("!wants.read && !wants.write, but there's still some data to be read");
-            }
-
             let timeout = time::sleep(Duration::from_millis(100));
+            assert!(wants.read || wants.write, "!wants.read && !wants.write, but there's still some data to be read");
 
             select! {
                 err = self.t.ready_for().read(), if wants.read => {
@@ -187,5 +196,31 @@ impl SyncTransport
         self.read_fully(&mut ret[1..]).await?;
         self.tracing_utility.update_state(K_PACKET, "packet ready");
         return Ok(ret);
+    }
+
+    pub async fn send_close_notify(&mut self) -> io::Result<()>
+    {
+        self.t.send_close_notify();
+
+        loop {
+            let wants = self.t.wants(false, false);
+            if !wants.read && !wants.write {
+                return Ok(());
+            }
+
+            let timeout = time::sleep(Duration::from_millis(100));
+
+            select! {
+                err = self.t.ready_for().read(), if wants.read => {
+                    err?;
+                    self.t.pre_read()?;
+                },
+                err = self.t.ready_for().write(), if wants.write => {
+                    err?;
+                    self.t.pre_write()?;
+                },
+                _ = timeout => {}
+            }
+        }
     }
 }

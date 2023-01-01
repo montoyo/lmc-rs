@@ -14,7 +14,7 @@ use std::future::Future;
 use tokio::net::TcpListener;
 use tokio::time;
 use rand::{thread_rng, Rng};
-use log::{debug, trace};
+use log::{error, debug, trace};
 
 mod sync_transport;
 mod tracing;
@@ -222,17 +222,26 @@ impl MiniBroker
         ExpectOrEnqueue(self)
     }
 
+    async fn terminate_conn(&mut self) -> io::Result<bool>
+    {
+        self.transport.send_close_notify().await?;
+        self.transport.drop_byte().await
+    }
+
     pub async fn expect_disconnect(&mut self)
     {
         match self.recv(true).await {
             Ok(IncomingBrokerPacket::Disconnect(_)) => {
-                let result = time::timeout(Duration::from_secs(10), self.transport.drop_byte()).await;
+                let result = time::timeout(Duration::from_secs(10), self.terminate_conn()).await;
 
                 match result {
                     Ok(Ok(true))  => {}, //Disconnected
                     Ok(Ok(false)) => panic!("Unexpected bytes after DISCONNECT packet."),
-                    Ok(Err(err))  => panic!("Error while waiting for the socket to close: {:?}", err),
-                    Err(_tiemout) => panic!("Timed out waiting for the socket to close")
+                    Ok(Err(err))  => match err.kind() {
+                        io::ErrorKind::UnexpectedEof => {}, //Disconnected,
+                        _ => panic!("Error while waiting for the socket to close: {:?}", err)
+                    },
+                    Err(_timeout) => panic!("Timed out waiting for the socket to close")
                 }
             },
             Ok(x) => panic!("Expected a disconnect packet, got a {:?} packet instead", x.packet_type()),
@@ -246,7 +255,8 @@ impl Drop for MiniBroker
     fn drop(&mut self)
     {
         if self.pending_packets.len() > 0 {
-            panic!("{} unprocessed packet on receive queue", self.pending_packets.len());
+            let left_pkts = self.pending_packets.iter().map(|pkt| format!("{:?}", pkt.packet_type())).collect::<Vec<_>>();
+            panic!("{} unprocessed packet(s) on receive queue: {}", left_pkts.len(), left_pkts.join(", "));
         }
     }
 }

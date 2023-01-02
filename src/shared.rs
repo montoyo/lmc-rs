@@ -1,11 +1,9 @@
 use std::task::Waker;
 use std::sync::atomic::{AtomicU16, AtomicU32};
 
-use parking_lot::Mutex;
-use fxhash::FxHashMap;
-
-use super::QoS;
-use super::transceiver::util::def_enum_with_intos;
+use crate::QoS;
+use crate::transceiver::util::def_enum_with_intos;
+use crate::wrappers::{LmcHashMap, LmcMutex};
 
 /// Describes awaiting states associated with a packet ID in a [`NotifierMap`]
 pub enum NotifyResult
@@ -37,7 +35,7 @@ pub enum NotifyResult
 /// entry corresponding to a publish packet is removed, that
 /// means that the event was triggered (or that the future
 /// got cancelled).
-pub type NotifierMap = Mutex<FxHashMap<u16, NotifyResult>>;
+pub type NotifierMap = LmcMutex<LmcHashMap<u16, NotifyResult>>;
 
 /// A subscription that has been validated by the broker
 pub struct ExistingSubscription
@@ -111,7 +109,7 @@ pub struct ClientShared
     pub notify_comp: NotifierMap,
 
     /// A map describing the state of each topic subscriptions
-    pub subs: Mutex<FxHashMap<String, SubscriptionState>>,
+    pub subs: LmcMutex<LmcHashMap<String, SubscriptionState>>,
 
     /// Value to be used as an ID for the next "fast callback"
     /// topic subscription.
@@ -126,10 +124,10 @@ impl ClientShared
     {
         Self {
             next_packet_id: AtomicU16::new(1),
-            notify_ack: Mutex::new(Default::default()),
-            notify_rec: Mutex::new(Default::default()),
-            notify_comp: Mutex::new(Default::default()),
-            subs: Mutex::new(Default::default()),
+            notify_ack: LmcMutex::new(Default::default()),
+            notify_rec: LmcMutex::new(Default::default()),
+            notify_comp: LmcMutex::new(Default::default()),
+            subs: LmcMutex::new(Default::default()),
             next_callback_id: AtomicU32::new(0)
         }
     }

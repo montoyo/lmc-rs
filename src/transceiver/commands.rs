@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use super::super::QoS;
+use crate::QoS;
 use super::packets::IncomingPublishPacket;
 use super::util::def_enum_with_intos;
 

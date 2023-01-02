@@ -1,7 +1,7 @@
 use std::{str, mem, ptr};
 use mem::MaybeUninit;
 
-use super::super::errors::PacketDecodeError;
+use crate::errors::PacketDecodeError;
 
 /// A marker for big endian values. These values must be converted into native byte order
 /// before processing them.

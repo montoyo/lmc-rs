@@ -3,8 +3,7 @@ use std::panic::Location;
 use std::time::{Instant, Duration};
 use std::thread;
 
-use parking_lot::Mutex;
-use fxhash::FxHashMap;
+use crate::wrappers::{LmcHashMap, LmcMutex};
 use log::debug;
 
 struct Entry
@@ -14,7 +13,7 @@ struct Entry
     t: Instant
 }
 
-type Shared = FxHashMap<&'static str, Entry>;
+type Shared = LmcHashMap<&'static str, Entry>;
 
 /// A utility class used in tests only that prints out a status
 /// report every 10 seconds.
@@ -27,7 +26,7 @@ type Shared = FxHashMap<&'static str, Entry>;
 /// [`TracingUtility`] is ref-counted and will stop
 /// automatically once all references are released.
 #[derive(Clone)]
-pub struct TracingUtility(Arc<Mutex<Shared>>);
+pub struct TracingUtility(Arc<LmcMutex<Shared>>);
 
 impl TracingUtility
 {
@@ -42,7 +41,7 @@ impl TracingUtility
         }
     }
 
-    fn thread_fn(shared_weak: WeakArc<Mutex<Shared>>)
+    fn thread_fn(shared_weak: WeakArc<LmcMutex<Shared>>)
     {
         loop {
             thread::sleep(Duration::from_secs(10));
@@ -64,7 +63,7 @@ impl TracingUtility
     /// are dropped.
     pub fn spawn() -> Self
     {
-        let ret = Arc::new(Mutex::new(Default::default()));
+        let ret = Arc::new(LmcMutex::new(Default::default()));
         let weak = Arc::downgrade(&ret);
 
         thread::spawn(move || Self::thread_fn(weak));

@@ -3,8 +3,8 @@ use std::task::{Poll, Context};
 use std::sync::Arc;
 use std::pin::Pin;
 
-use super::QoS;
-use super::shared::{ClientShared, NotifierMap, SubscriptionState, NotifyResult};
+use crate::QoS;
+use crate::shared::{ClientShared, NotifierMap, SubscriptionState, NotifyResult};
 
 /// A trait used to statically index a [`NotifierMap`] in [`ClientShared`]
 pub(super) trait NotifierMapAccessor: Unpin

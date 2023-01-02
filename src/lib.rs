@@ -103,6 +103,7 @@ mod transceiver;
 mod futures;
 mod errors;
 mod shared;
+mod wrappers;
 
 #[cfg(test)]
 mod tests;

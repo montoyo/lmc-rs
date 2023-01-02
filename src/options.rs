@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use tokio::net::TcpStream;
 
-use super::QoS;
-use super::transport::{Transport, TcpTransport};
-use super::errors::ConnectError;
+use crate::QoS;
+use crate::transport::{Transport, TcpTransport};
+use crate::errors::ConnectError;
 
 /// [`LastWill`] describes a message to be published if the client disconnects unexpectedly,
 /// e.g. if the socket gets closed before a `DISCONNECT` packet could be sent by the client.
@@ -427,9 +427,9 @@ mod tls {
     use webpki::TrustAnchor;
     use tokio::net::TcpStream;
 
-    use super::super::tls::{OptionsWithTls, CryptoBytes, CryptoError, Transport as TlsTransport};
-    use super::super::errors::ConnectError;
-    use super::super::transport::Transport;
+    use crate::tls::{OptionsWithTls, CryptoBytes, CryptoError, Transport as TlsTransport};
+    use crate::errors::ConnectError;
+    use crate::transport::Transport;
 
     impl super::ConnectionConfig<ClientConnection> for ClientConfig
     {
@@ -477,7 +477,7 @@ mod tls {
         #[cfg(feature = "dangerous_tls")]
         pub fn enable_dangerous_non_verified_tls(self) -> OptionsWithTls<'a>
         {
-            use super::super::tls::dangerous;
+            use crate::tls::dangerous;
 
             let tls_config = ClientConfig::builder()
                 .with_safe_defaults()

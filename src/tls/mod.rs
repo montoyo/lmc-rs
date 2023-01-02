@@ -11,8 +11,8 @@ pub(super) mod dangerous;
 mod client_auth;
 
 pub use client_auth::ClientCertResolver;
-use super::options::OptionsT;
-use super::transport::{ReadyFor, Transport as TransportTrait, WantedFlags};
+use crate::options::OptionsT;
+use crate::transport::{ReadyFor, Transport as TransportTrait, WantedFlags};
 
 /// An enum used to specify the format of raw bytes of a TLS certificate
 /// or private key.

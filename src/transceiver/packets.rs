@@ -3,9 +3,9 @@ use std::mem::{size_of, MaybeUninit};
 use std::sync::Arc;
 
 use super::byte_io::{BigEndian, ByteReader, ByteWriter};
-use super::super::QoS;
-use super::super::options::LastWill;
-use super::super::errors::{ServerConnectError, PacketDecodeError};
+use crate::QoS;
+use crate::options::LastWill;
+use crate::errors::{ServerConnectError, PacketDecodeError};
 
 pub const MAX_HEADER_SIZE: usize = 5; //1 byte control field + up to 4 bytes of 'remaining length' field
 

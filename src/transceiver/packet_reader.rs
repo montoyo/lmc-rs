@@ -3,8 +3,8 @@ use std::io;
 use super::packets::{self, IncomingPacket, ControlField};
 use super::byte_io::ByteReader;
 use super::util::panic_in_test;
-use super::super::transport::Transport;
-use super::super::errors::PacketDecodeError;
+use crate::transport::Transport;
+use crate::errors::PacketDecodeError;
 
 #[derive(Clone, Copy)]
 struct PacketSizeInfo

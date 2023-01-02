@@ -9,7 +9,6 @@ use std::task::Waker;
 use tokio::sync::{mpsc, oneshot};
 use tokio::{time, select};
 use tokio::task::{self, JoinHandle};
-use fxhash::FxHashMap;
 use log::{error, warn, debug};
 
 pub mod byte_io;
@@ -19,9 +18,10 @@ pub mod subscription;
 pub mod commands;
 pub mod packets;
 
-use super::{QoS, ClientShared, SubscriptionState, ExistingSubscription, NotifyResult, NotifierMap};
-use super::transport::Transport;
-use super::errors::ServerConnectError;
+use crate::{QoS, ClientShared, SubscriptionState, ExistingSubscription, NotifyResult, NotifierMap};
+use crate::transport::Transport;
+use crate::errors::ServerConnectError;
+use crate::wrappers::LmcHashMap;
 
 use util::{IdType, panic_in_test};
 use commands::{Command, SubscriptionKind, UnsubKind};
@@ -104,10 +104,10 @@ pub(super) struct Transceiver
     /// A map used to store packets that may be re-transmitted. This one excludes
     /// `SUBSCRIBE` packet as they require additional metadata and are thus stored
     /// in their own map.
-    pending_packets: FxHashMap<IdType, Arc<[u8]>>,
+    pending_packets: LmcHashMap<IdType, Arc<[u8]>>,
 
     /// Pending `SUBSCRIBE` packets that may be re-transmitted.
-    pending_subs: FxHashMap<u16, PendingSub>,
+    pending_subs: LmcHashMap<u16, PendingSub>,
 
     /// Packet currently being transmitted, if any. When the transceiver task is
     /// created, this field will contain the `CONNECT` packet.
@@ -134,7 +134,7 @@ pub(super) struct Transceiver
     /// The outgoing packet queue
     internal_pkt_queue: VecDeque<InternalPacket>,
     shared: Arc<ClientShared>,
-    subscriptions: FxHashMap<String, Subscription>,
+    subscriptions: LmcHashMap<String, Subscription>,
     disconnect_sent: bool,
     cmd_queue_closed: bool,
 

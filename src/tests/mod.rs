@@ -8,8 +8,8 @@ use log::{debug, error, LevelFilter};
 mod mini_broker;
 use mini_broker::MiniBroker;
 
-use super::{Options, Client, QoS, PublishEvent, ClientShutdownHandle, SubscriptionStatus};
-use super::transceiver::packets::*;
+use crate::{Options, Client, QoS, PublishEvent, ClientShutdownHandle, SubscriptionStatus};
+use crate::transceiver::packets::*;
 
 static TEST_INIT: Once = Once::new();
 

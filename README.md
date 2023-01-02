@@ -58,20 +58,17 @@ async fn main()
 
 ## Feature list
 
-The following (non-default) features can be enabled:
+The following features can be enabled/disabled:
 
- - `tls` for TLS support
- - `dangerous_tls` to allow dangerous TLS functions, such as the one that enables you to bypass server certificate verification
+ - `fxhash` (default) To use faster hash maps thanks to the [fxhash](https://crates.io/crates/fxhash) crate
+ - `parking_lot` (default) To use faster, non-failing mutexes thanks to the [parking_lot](https://crates.io/crates/parking_lot) crate
+ - `tls` **(non-default)** for TLS support
+ - `dangerous_tls` **(non-default)** to allow dangerous TLS functions, such as the one that enables you to bypass server certificate verification
 
 ## Philosophy
 
  - **Less dependencies:** Avoid using crates, unless it can improve performances. Make dependencies optional through features as often as possible.
  - **Unsafe code:** Use unsafe code to improve performances, provided the unsafe code can be proven to be safe trivially.
-
-## TODOs
-
- - Optionalize `parking_lot` and `fxhash`
- - Release on crates.io
 
 ## Missing features
 

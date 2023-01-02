@@ -10,13 +10,14 @@ keywords = ["mqtt", "client", "async", "iot"]
 categories = ["network-programming"]
 
 [features]
+default = ["fxhash", "parking_lot"]
 tls = ["rustls", "rustls-native-certs", "rustls-pemfile", "webpki"]
 dangerous_tls = ["tls", "rustls/dangerous_configuration"]
+fxhash = ["dep:fxhash"]
+parking_lot = ["dep:parking_lot"]
 
 [dependencies]
 log = "^0.4"
-fxhash = "^0.2"
-parking_lot = "^0.12"
 
 [dependencies.tokio]
 version = "^1.6.1"
@@ -25,7 +26,7 @@ features = ["net", "sync", "time", "macros", "rt"]
 ####################### Test Dependencies #######################
 
 [dev-dependencies]
-env_logger = "^0.9"
+env_logger = "^0.10"
 tokio-test = "^0.4"
 rand = "^0.8"
 console-subscriber = "^0.1"
@@ -50,4 +51,14 @@ optional = true
 
 [dependencies.webpki]
 version = "^0.22"
+optional = true
+
+################## Other Optional Dependencies ##################
+
+[dependencies.fxhash]
+version = "^0.2"
+optional = true
+
+[dependencies.parking_lot]
+version = "^0.12"
 optional = true

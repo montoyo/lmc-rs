@@ -8,7 +8,7 @@ repository = "https://github.com/montoyo/lmc-rs"
 license = "MIT OR Apache-2.0"
 keywords = ["mqtt", "client", "async", "iot"]
 categories = ["network-programming"]
-description = ""
+description = "An asynchronous, 100% Rust implementation of an MQTTv3 client."
 
 [features]
 default = ["fxhash", "parking_lot"]

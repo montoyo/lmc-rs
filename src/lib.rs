@@ -264,6 +264,22 @@ enum SubWait
     After
 }
 
+/// The status of a topic subscription. Can be queried using
+/// [`Client::get_subscription_status()`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SubscriptionStatus
+{
+    /// The subscription does not exist.
+    Absent,
+
+    /// The subscription is in the process of being established.
+    Pending,
+
+    /// THe subscription has already been established, and messages
+    /// are ready to be received.
+    Live
+}
+
 impl Client
 {
     /// Attempts to connect to the MQTT broker at the specified `host` using the specified [`Options`].
@@ -657,6 +673,17 @@ impl Client
 
         let ret = subs::Callback::new(self.cmd_queue.clone(), topic, id);
         Ok((ret, qos))
+    }
+
+    /// Queries the status of a subscription to the specified topic. See [`SubscriptionStatus`] for
+    /// details regarding the return value.
+    pub fn get_subscription_status(&self, topic: &str) -> SubscriptionStatus
+    {
+        match self.shared.subs.lock().get(topic) {
+            Some(SubscriptionState::Existing(_)) => SubscriptionStatus::Live,
+            Some(SubscriptionState::Pending(_))  => SubscriptionStatus::Pending,
+            None                                 => SubscriptionStatus::Absent
+        }
     }
 
     /// Unsubscribes from the specified topic, regardless of any existing subscription to that topic. If there

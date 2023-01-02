@@ -8,7 +8,7 @@ use log::{debug, error, LevelFilter};
 mod mini_broker;
 use mini_broker::MiniBroker;
 
-use super::{Options, Client, QoS, PublishEvent, ClientShutdownHandle};
+use super::{Options, Client, QoS, PublishEvent, ClientShutdownHandle, SubscriptionStatus};
 use super::transceiver::packets::*;
 
 static TEST_INIT: Once = Once::new();
@@ -201,6 +201,184 @@ macro_rules! def_tests
             }
         }
     };
+}
+
+def_tests! {
+    /// Simple test validating that `PINGREQ` packets are sent by the client after
+    /// the configured amount of time.
+    ping:
+    
+    async fn client_fn(client: Client, shutdown_handle: ClientShutdownHandle, _topic: &str)
+    {
+        debug!("==> Connected! session_present={}", client.was_session_present());
+        time::sleep(Duration::from_secs(10)).await;
+        drop(client);
+    
+        let disconnect_result = shutdown_handle.disconnect().await.unwrap();
+        assert_eq!(disconnect_result.disconnect_sent, true);
+        assert_eq!(disconnect_result.clean, true);
+    }
+
+    async fn broker_fn(mut broker: MiniBroker) -> io::Result<()>
+    {
+        broker.expect().connect().await?;
+        broker.send(&ConnAckPacket(Ok(false))).await?;
+
+        broker.expect().pingreq().await?;
+        broker.send(&PingRespPacket).await?;
+
+        broker.expect_disconnect().await;
+        Ok(())
+    }
+}
+
+def_tests! {
+    /// Validates "hold" subscription. The subscription to the topic should
+    /// not be deleted because a hold reference is leaked.
+    sub_hold:
+    
+    async fn client_fn(client: Client, shutdown_handle: ClientShutdownHandle, topic: &str)
+    {
+        debug!("==> Connected! session_present={}", client.was_session_present());
+        client.subscribe_hold(topic.to_string(), QoS::AtMostOnce).await.unwrap().0.leak();
+        assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Live);
+
+        let (sub, qos) = client.subscribe_lossy(topic, QoS::ExactlyOnce, 5).await.unwrap();
+        assert_eq!(qos, QoS::AtMostOnce);
+        assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Live);
+        drop(sub);
+
+        time::sleep(Duration::from_secs(1)).await;
+
+        //Broker will send the following message back to us, triggering an unsub if it
+        //weren't for the hold subscription
+        client.publish_qos_0(topic, b"trigger unsub", false).await.unwrap();
+        time::sleep(Duration::from_secs(3)).await;
+        assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Live);
+
+        //This, however, will force it to unsubscribe
+        client.unsubscribe(topic.to_string()).await;
+        time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Absent);
+        drop(client);
+    
+        let disconnect_result = shutdown_handle.disconnect().await.unwrap();
+        assert_eq!(disconnect_result.disconnect_sent, true);
+        assert_eq!(disconnect_result.clean, true);
+    }
+
+    async fn broker_fn(mut broker: MiniBroker) -> io::Result<()>
+    {
+        broker.expect().connect().await?;
+        broker.send(&ConnAckPacket(Ok(false))).await?;
+
+        let sub = broker.expect().subscribe().await?;
+        let sub_qos = sub.topics[0].1;
+        broker.send(&SubAckPacket::new(sub.packet_id, &[Ok(sub_qos)])).await?;
+
+        let msg1 = broker.recv_message().await?;
+        let msg2 = msg1.to_outgoing(sub_qos, false, 1);
+        broker.send_message(&msg2).await?;
+
+        let unsub = broker.expect().unsub().await?;
+        broker.send(&UnsubAckPacket::new(unsub.packet_id)).await?;
+
+        broker.expect_disconnect().await;
+        Ok(())
+    }
+}
+
+
+def_tests! {
+    /// Validates fast callback subscriptions.
+    fast_callback:
+    
+    async fn client_fn(client: Client, shutdown_handle: ClientShutdownHandle, topic: &str)
+    {
+        use tokio::sync::oneshot;
+        debug!("==> Connected! session_present={}", client.was_session_present());
+
+        let (os_tx, os_rx) = oneshot::channel::<IncomingPublishPacket>();
+        let mut os_tx = Some(os_tx);
+
+        let (sub, qos) = client
+            .subscribe_fast_callback(topic.to_string(), QoS::AtMostOnce, move |msg| os_tx.take().unwrap().send(msg).ok().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(qos, QoS::AtMostOnce);
+        assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Live);
+
+        //Broker will send the following message back to us, triggering an unsub
+        client.publish_qos_0(topic, b"test1", false).await.unwrap();
+
+        let msg = os_rx.await.unwrap();
+        assert_eq!(msg.payload(), b"test1");
+
+        sub.remove_callback().await;
+        client.publish_qos_0(topic, b"test2", false).await.unwrap(); //panic! will occur if callback is called again
+        time::sleep(Duration::from_secs(5)).await;
+
+        assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Absent);
+        drop(client);
+    
+        let disconnect_result = shutdown_handle.disconnect().await.unwrap();
+        assert_eq!(disconnect_result.disconnect_sent, true);
+        assert_eq!(disconnect_result.clean, true);
+    }
+
+    async fn broker_fn(mut broker: MiniBroker) -> io::Result<()>
+    {
+        broker.expect().connect().await?;
+        broker.send(&ConnAckPacket(Ok(false))).await?;
+
+        let sub = broker.expect().subscribe().await?;
+        let sub_qos = sub.topics[0].1;
+        broker.send(&SubAckPacket::new(sub.packet_id, &[Ok(sub_qos)])).await?;
+    
+        let msg1 = broker.recv_message().await?;
+        let msg2 = msg1.to_outgoing(sub_qos, false, 1);
+        broker.send_message(&msg2).await?;
+
+        let unsub = broker.expect().unsub().await?;
+        broker.send(&UnsubAckPacket::new(unsub.packet_id)).await?;
+    
+        let msg3 = broker.recv_message().await?;
+        let msg4 = msg3.to_outgoing(sub_qos, false, 2);
+        broker.send_message(&msg4).await?;
+
+        broker.expect_disconnect().await;
+        Ok(())
+    }
+}
+
+def_tests! {
+    /// Simple test validating that publish packets with QoS 1 are re-sent if no `PUBACK`
+    /// is received within a reasonable amount of time.
+    check_publish_resend:
+    
+    async fn client_fn(client: Client, shutdown_handle: ClientShutdownHandle, topic: &str)
+    {
+        debug!("==> Connected! session_present={}", client.was_session_present());
+        client.publish_qos_1(topic, b"test", false, true).await.unwrap();
+        drop(client);
+    
+        let disconnect_result = shutdown_handle.disconnect().await.unwrap();
+        assert_eq!(disconnect_result.disconnect_sent, true);
+        assert_eq!(disconnect_result.clean, true);
+    }
+
+    async fn broker_fn(mut broker: MiniBroker) -> io::Result<()>
+    {
+        broker.expect().connect().await?;
+        broker.send(&ConnAckPacket(Ok(false))).await?;
+        broker.expect().publish().await?;
+
+        //In theory, the message will be re-sent because we don't reply in time
+        broker.recv_message().await?;
+        broker.expect_disconnect().await;
+        Ok(())
+    }
 }
 
 def_tests! {

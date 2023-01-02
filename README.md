@@ -13,13 +13,6 @@ a basics APIs that don't allow you to, for instance, await the server's response
 control over all of its aspects, but also provides _no-headaches_, _easy-to-use_ functions if all you need is an MQTT client with no concerns
 for performance.
 
-## Features
-
-The following (non-default) features can be enabled:
-
- - `tls` for TLS support
- - `dangerous_tls` to allow dangerous TLS functions, such as the one that enables you to bypass server certificate verification
-
 ## Example use
 
 First, add the crate to your dependencies in `Cargo.toml`:
@@ -27,7 +20,7 @@ First, add the crate to your dependencies in `Cargo.toml`:
 ```toml
 [dependencies.lmc]
 version = "^0.1"
-features = ["tls"]
+features = ["tls"] # See below for available features
 ```
 
 Then, you can use the following code to get started. Note that this example assumes the following:
@@ -63,6 +56,13 @@ async fn main()
 }
 ```
 
+## Feature list
+
+The following (non-default) features can be enabled:
+
+ - `tls` for TLS support
+ - `dangerous_tls` to allow dangerous TLS functions, such as the one that enables you to bypass server certificate verification
+
 ## Philosophy
 
  - **Less dependencies:** Avoid using crates, unless it can improve performances. Make dependencies optional through features as often as possible.
@@ -70,13 +70,12 @@ async fn main()
 
 ## TODOs
 
- - Enhance README
- - More tests!
- - Test doc examples
+ - Optionalize `parking_lot` and `fxhash`
  - Release on crates.io
 
 ## Missing features
 
-For now, the following features are not available in LMC. They may be implemented later if someone needs it:
+For now, the following features are not available in LMC. They may be implemented later as required:
 
  - Websocket transport
+ - Multiple subscriptions using a single call/packet

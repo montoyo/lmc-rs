@@ -1,5 +1,5 @@
-#![doc(html_logo_url = "/logo.svg", html_favicon_url = "/favicon.ico")]
-//! This crates provides a basic MQTT client implementation with a high-level, asynchronous interface.
+#![doc(html_logo_url = "https://raw.githubusercontent.com/montoyo/lmc-rs/master/logo.svg", html_favicon_url = "https://raw.githubusercontent.com/montoyo/lmc-rs/master/favicon.ico")]
+//! This crate provides a basic MQTT client implementation with a high-level, asynchronous interface.
 //! 
 //! # Connecting
 //! 

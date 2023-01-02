@@ -7,6 +7,11 @@ use std::time::Duration;
 use tokio::select;
 use tokio::time;
 
+/// A wrapper around `Box<dyn Transport>` that provides easy-to-use, blocking
+/// functions to receive and send packets.
+/// 
+/// This is used by [`MiniBroker`](super::MiniBroker) in tests only and should
+/// not be used outside of tests.
 pub struct SyncTransport
 {
     t: Box<dyn Transport>,
@@ -19,6 +24,8 @@ const LOOP_COUNT: &'static [&'static str] = &["loop 0", "loop 1", "loop 2", "loo
 
 impl SyncTransport
 {
+    /// Instantiates a new [`SyncTransport`] with the specified [`Transport`]
+    /// and [`TracingUtility`] instances.
     pub fn new<T: Transport + 'static>(transport: T, tracing_utility: TracingUtility) -> Self
     {
         Self {
@@ -27,6 +34,7 @@ impl SyncTransport
         }
     }
 
+    /// Sends the entirety of the specified byte slice in a blocking manner.
     pub async fn write_fully(&mut self, mut data: &[u8]) -> io::Result<()>
     {
         loop {
@@ -129,6 +137,12 @@ impl SyncTransport
         }
     }
 
+    /// Reads a single byte but does not return it. Instead, returns
+    /// `true` if the underlying connection has been closed gracefully
+    /// and `false` if the connection is still alive and a byte was
+    /// obtained.
+    /// 
+    /// This is used to wait for connection to be closed.
     pub async fn drop_byte(&mut self) -> io::Result<bool>
     {
         let mut trash = [0u8];
@@ -158,6 +172,13 @@ impl SyncTransport
         }
     }
 
+    /// Reads an entire packet into a `Vec<u8>` in a blocking manner.
+    /// 
+    /// Because the number of bytes encoding the size can vary, the returned
+    /// bytes do not contain the packet size bytes. So, the returned `Vec`
+    /// has the following structure:
+    ///  - `ret[0]` contains the control field (packet type & flags)
+    ///  - `ret[1..]` contains the payload
     pub async fn read_packet(&mut self) -> io::Result<Vec<u8>>
     {
         let mut header = [0u8; 2];
@@ -198,6 +219,8 @@ impl SyncTransport
         return Ok(ret);
     }
 
+    /// Sends a transport close notification. This only has an effect when using TLS,
+    /// but is necessary to perform a graceful socket shutdown.
     pub async fn send_close_notify(&mut self) -> io::Result<()>
     {
         self.t.send_close_notify();

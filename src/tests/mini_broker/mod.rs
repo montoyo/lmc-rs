@@ -14,7 +14,7 @@ use std::future::Future;
 use tokio::net::TcpListener;
 use tokio::time;
 use rand::{thread_rng, Rng};
-use log::{error, debug, trace};
+use log::{debug, trace};
 
 mod sync_transport;
 mod tracing;
@@ -22,6 +22,13 @@ mod tracing;
 use sync_transport::SyncTransport;
 use tracing::{TracingUtility, KeyedTracingUtility};
 
+/// An extremely basic implementation of an MQTT broker, for testing purposes only.
+/// 
+/// Packets pushed onto the `pending_packets` queue (via, for instance,
+/// [`MiniBroker::expect_or_enqueue()`], [`MiniBroker::send_message()`] or
+/// [`MiniBroker::recv_message()`]) <strong>MUST</strong> be processed before the
+/// [`MiniBroker`] instance is dropped. Any unprocessed packet will raise a
+/// `panic!`, causing the test to fail.
 pub struct MiniBroker
 {
     transport: SyncTransport,
@@ -32,11 +39,24 @@ pub struct MiniBroker
     listener: TcpListener
 }
 
+/// A utility struct obtained by calling [`MiniBroker::expect()`] that
+/// provides functions to await packets of a specific type.
+/// 
+/// If a packet with a different type is received instead, a `panic!`
+/// will be raised.
 #[must_use] pub struct Expect<'a>(&'a mut MiniBroker);
+
+/// A utility struct obtained by calling [`MiniBroker::expect_or_enqueue()`]
+/// that provides functions to await packets of a specific type.
+/// 
+/// If a packet with a different type is received instead, it will be
+/// pushed onto the broker's `pending_packets` queue.
 #[must_use] pub struct ExpectOrEnqueue<'a>(&'a mut MiniBroker);
 
 impl MiniBroker
 {
+    /// Creates a TCP listener on a random available port on localhost. Returns the listener
+    /// and the chosen port.
     pub async fn create_listener() -> io::Result<(TcpListener, u16)>
     {
         let mut rng = thread_rng();
@@ -57,7 +77,9 @@ impl MiniBroker
         }
     }
 
-    pub fn new<T: Transport + 'static>(transport: T, listener: TcpListener) -> Self
+    /// Creates a new instance of a [`MiniBroker`] with the specified [`Transport`]
+    /// and listener. See [`MiniBroker::create_listener()`] for listener creation.
+    fn new<T: Transport + 'static>(transport: T, listener: TcpListener) -> Self
     {
         let tracing_utility = TracingUtility::spawn();
 
@@ -69,6 +91,9 @@ impl MiniBroker
         }
     }
 
+    /// Creates a new instance of a [`MiniBroker`] using a [`TcpTransport`] and
+    /// the specified listener. See [`MiniBroker::create_listener()`] for listener
+    /// creation.
     pub async fn new_tcp(listener: TcpListener) -> io::Result<Self>
     {
         let (stream, _) = listener.accept().await?;
@@ -77,6 +102,11 @@ impl MiniBroker
         Ok(Self::new(TcpTransport::new(stream), listener))
     }
 
+    /// Creates a new instance of a [`MiniBroker`] using a
+    /// [`TlsTransport`](`crate::tls::Transport`) and the specified listener. See
+    /// [`MiniBroker::create_listener()`] for listener creation.
+    /// 
+    /// The certificate & keys in use are the ones in the `test_data` directory.
     #[cfg(feature = "tls")]
     pub async fn new_tls(listener: TcpListener) -> io::Result<Self>
     {
@@ -111,6 +141,7 @@ impl MiniBroker
         Ok(Self::new(transport, listener))
     }
 
+    /// Sends the specified packet to the client.
     pub async fn send<P: Encode>(&mut self, pkt: &P) -> io::Result<()>
     {
         trace!("S==>C {:?}", P::packet_type());
@@ -121,6 +152,12 @@ impl MiniBroker
         Ok(())
     }
 
+    /// Reads the next packet. Depending on the value of `use_pending`, the next packet is
+    /// either retrieved from the `pending_packets` queue, or read from the socket.
+    /// 
+    /// Generally, a specific packet type is expected, so [`MiniBroker`] provides the
+    /// [`expect()`](`MiniBroker::expect()`) method together with the methods implemented
+    /// by the [`Expect`] structure to easily await for a packet with a specific type.
     pub async fn recv(&mut self, use_pending: bool) -> io::Result<IncomingBrokerPacket>
     {
         if use_pending {
@@ -139,6 +176,8 @@ impl MiniBroker
         Ok(ret)
     }
 
+    /// Receives a `PUBLISH` packet and automatically deals with the subsequent QoS packets,
+    /// pushing all "unexpected" packets onto the `pending_packets` queue.
     #[track_caller]
     pub fn recv_message(&mut self) -> impl Future<Output = io::Result<IncomingPublishPacket>> + '_
     {
@@ -149,7 +188,7 @@ impl MiniBroker
     async fn recv_message_priv(&mut self) -> io::Result<IncomingPublishPacket>
     {
         self.tracing_utility.update_state("rx PUBLISH");
-        let ret = self.expect_or_enqueue_no_track().publish().await?;
+        let ret = self.expect_no_track().publish().await?;
         let info = ret.info();
         let qos = info.flags.qos();
 
@@ -171,6 +210,8 @@ impl MiniBroker
         Ok(ret)
     }
 
+    /// Sends a `PUBLISH` packet and automatically deals with the subsequent QoS packets,
+    /// pushing all "unexpected" packets onto the `pending_packets` queue.
     #[track_caller]
     pub fn send_message<'a>(&'a mut self, msg: &'a OutgoingPublishPacket<'a>) -> impl Future<Output = io::Result<()>> + 'a
     {
@@ -203,6 +244,9 @@ impl MiniBroker
         Ok(())
     }
 
+    /// Returns the [`Expect`] utility struct that can be used to await a
+    /// packet of a specific type. If the received packet does not match
+    /// the expected packet type, `panic!` is raised.
     #[track_caller]
     pub fn expect<'a>(&'a mut self) -> Expect<'a>
     {
@@ -210,11 +254,20 @@ impl MiniBroker
         Expect(self)
     }
     
+    /// Returns the [`ExpectOrEnqueue`] utility struct that can be used to
+    /// await a packet of a specific type. Packets received with another
+    /// type are pushed onto the `pending_packets` queue.
+    #[allow(dead_code)]
     #[track_caller]
     pub fn expect_or_enqueue<'a>(&'a mut self) -> ExpectOrEnqueue<'a>
     {
         self.tracing_utility.trace("expecting_or_enqueue", Location::caller());
         ExpectOrEnqueue(self)
+    }
+
+    fn expect_no_track<'a>(&'a mut self) -> Expect<'a>
+    {
+        Expect(self)
     }
 
     fn expect_or_enqueue_no_track<'a>(&'a mut self) -> ExpectOrEnqueue<'a>
@@ -228,6 +281,13 @@ impl MiniBroker
         self.transport.drop_byte().await
     }
 
+    /// Awaits a `DISCONNECT` packet and attempts to close the connection
+    /// gracefully.
+    /// 
+    /// Because handling clean disconnects is rather difficult, the
+    /// implementation is quite lenient and would not fail if it fails
+    /// to receive the `DISCONNECT` packet. It will, however, definitely
+    /// fail if another packet type is received.
     pub async fn expect_disconnect(&mut self)
     {
         match self.recv(true).await {
@@ -264,6 +324,7 @@ impl Drop for MiniBroker
 macro_rules! generate_expect
 {
     { $(IncomingBrokerPacket::$v:ident($t:ty) => $f:ident),+ } => {
+        #[allow(dead_code)]
         impl<'a> Expect<'a>
         {
             $(
@@ -277,6 +338,7 @@ macro_rules! generate_expect
             )+
         }
 
+        #[allow(dead_code)]
         impl<'a> ExpectOrEnqueue<'a>
         {
             $(

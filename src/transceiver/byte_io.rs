@@ -48,6 +48,7 @@ impl<'a> ByteReader<'a>
     /// Reads a single byte and returns it.
     /// 
     /// A [`PacketDecodeError`] is returned if the slice was empty.
+    #[allow(dead_code)]
     pub fn read_u8(&mut self) -> Result<u8, PacketDecodeError>
     {
         if self.0.len() < 1 {

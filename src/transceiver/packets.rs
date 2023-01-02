@@ -634,6 +634,7 @@ impl TryFrom<u8> for PublishFlags
     /// Validates [`PublishFlags`] in their raw byte form. If
     /// invalid bits are detected,
     /// [`PacketDecodeError::MalformedPacket`] is returned.
+    #[allow(rustdoc::private_intra_doc_links)]
     fn try_from(value: u8) -> Result<Self, PacketDecodeError>
     {
         if (value & !Self::ALL_BITS) != 0 {
@@ -1228,7 +1229,7 @@ macro_rules! def_empty_outgoing_packet {
         #[cfg(test)]
         impl $name
         {
-            fn decode(rd: &mut ByteReader, ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
+            fn decode(_rd: &mut ByteReader, ctrl_field: ControlField) -> Result<Self, PacketDecodeError>
             {
                 assert_eq!(ctrl_field.flags(), 0);
                 Ok(Self)

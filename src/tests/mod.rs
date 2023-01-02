@@ -13,6 +13,8 @@ use super::transceiver::packets::*;
 
 static TEST_INIT: Once = Once::new();
 
+/// Initializes the logger and Tokio's console_subscriber.
+/// This must be called at the beginning of each tests.
 fn init_test()
 {
     TEST_INIT.call_once(|| {
@@ -36,14 +38,23 @@ fn init_test()
     });
 }
 
+/// Generates four high-level tests from a client & broker functions:
+///  - One using a third-party broker (presumed to be running on localhost:1883), without TLS
+///  - One using a third-party broker (presumed to be running on localhost:8883), with TLS
+///  - One using [`MiniBroker`] and the provided broker function, without TLS
+///  - One using [`MiniBroker`] and the provided broker function, with TLS
+/// 
+/// See existing tests for examples.
 macro_rules! def_tests
 {
     {
+        $(#[$($attrs:tt)*])*
         $name:ident:
         async fn client_fn($client:ident: Client, $shutdown_handle:ident: ClientShutdownHandle, $topic:ident: &str) $client_fn:block
         async fn broker_fn(mut $broker:ident: MiniBroker) -> io::Result<()> $broker_fn:block
     } =>
     {
+        $(#[$($attrs)*])*
         mod $name
         {
             use super::*;
@@ -193,7 +204,8 @@ macro_rules! def_tests
 }
 
 def_tests! {
-    simple:
+    /// High-level test validating lmc's basic functionalities.
+    complete:
     
     async fn client_fn(client: Client, shutdown_handle: ClientShutdownHandle, topic: &str)
     {

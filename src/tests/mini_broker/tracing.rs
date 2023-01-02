@@ -16,6 +16,16 @@ struct Entry
 
 type Shared = FxHashMap<&'static str, Entry>;
 
+/// A utility class used in tests only that prints out a status
+/// report every 10 seconds.
+/// 
+/// This is used to track blocking async functions, which I
+/// found to be extremely difficult to do because the stack
+/// traces presented in debuggers is unreadable. Tokio's
+/// `console_subscriber` helps a bit but not enough.
+/// 
+/// [`TracingUtility`] is ref-counted and will stop
+/// automatically once all references are released.
 #[derive(Clone)]
 pub struct TracingUtility(Arc<Mutex<Shared>>);
 
@@ -48,6 +58,10 @@ impl TracingUtility
         }
     }
 
+    /// Creates a new [`TracingUtility`], spawns its thread and returns it.
+    /// 
+    /// The thread will stop once the return value and all of its clones
+    /// are dropped.
     pub fn spawn() -> Self
     {
         let ret = Arc::new(Mutex::new(Default::default()));
@@ -57,11 +71,14 @@ impl TracingUtility
         Self(ret)
     }
 
+    /// Updates the state and the location of the tracking entry with the specified key.
     pub fn trace(&self, key: &'static str, state: &'static str, location: &'static Location<'static>)
     {
         self.0.lock().insert(key, Entry { state, location: Some(location), t: Instant::now() });
     }
 
+    /// Updates the state string only of the tracking entry with the specified key, leaving
+    /// its location unchanged.
     pub fn update_state(&self, key: &'static str, state: &'static str)
     {
         let t = Instant::now();
@@ -73,6 +90,8 @@ impl TracingUtility
             .or_insert(Entry { state, location: None, t });
     }
 
+    /// Binds this [`TracingUtility`] to the tracking entry with the specified key,
+    /// returning a [`KeyedTracingUtility`].
     pub fn with_key(self, key: &'static str) -> KeyedTracingUtility
     {
         KeyedTracingUtility {
@@ -82,6 +101,8 @@ impl TracingUtility
     }
 }
 
+/// A reference to a [`TracingUtility`] bound to a specific tracking entry.
+/// Can be created by calling [`TracingUtility::with_key()`].
 pub struct KeyedTracingUtility
 {
     tracing_utility: TracingUtility,
@@ -90,11 +111,13 @@ pub struct KeyedTracingUtility
 
 impl KeyedTracingUtility
 {
+    /// Calls [`TracingUtility::trace()`] with the key bound to this object.
     pub fn trace(&self, state: &'static str, location: &'static Location<'static>)
     {
         self.tracing_utility.trace(self.key, state, location);
     }
 
+    /// Calls [`TracingUtility::update_state()`] with the key bound to this object.
     pub fn update_state(&self, state: &'static str)
     {
         self.tracing_utility.update_state(self.key, state);

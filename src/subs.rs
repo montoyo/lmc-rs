@@ -1,72 +1,16 @@
-use std::sync::Arc;
 use tokio::sync::mpsc;
-
-use super::shared::{ClientShared, SubscriptionState};
 use super::transceiver::commands::{Command, UnsubCommand, UnsubKind};
-
-/// A kind of subscription that cannot be used to obtain message, but
-/// is used to prevent the transceiver task from automatically
-/// unsubscribing from a topic.
-/// 
-/// When an instance of this struct is dropped, the reference is
-/// released and the subscription is not guaranteed to be held
-/// anymore, unless of course [`Hold::leak()`] is called.
-/// 
-/// In any case, this can be bypassed by explicitely calling
-/// [`Client::unsubscribe()`](super::Client::unsubscribe()).
-pub struct Hold
-{
-    shared: Arc<ClientShared>,
-    topic: String,
-    leaked: bool
-}
-
-impl Hold
-{
-    /// Creates a [`Hold`] susbcription object.
-    /// 
-    /// Note that an entry corresponding to this topic must already exist
-    /// in the subscription map and that the reference should have already
-    /// been added.
-    pub(super) fn new(shared: Arc<ClientShared>, topic: String) -> Self
-    {
-        Self { shared, topic, leaked: false }
-    }
-
-    /// Leaks the subscription object, preventing the transceiver task from
-    /// unsubscribing to the topic forever.
-    /// 
-    /// This can still be bypassed by explicitely calling
-    /// [`Client::unsubscribe()`](super::Client::unsubscribe()).
-    pub fn leak(mut self)
-    {
-        self.leaked = true;
-    }
-}
-
-impl Drop for Hold
-{
-    fn drop(&mut self)
-    {
-        if !self.leaked {
-            match self.shared.subs.lock().get_mut(&self.topic) {
-                Some(SubscriptionState::Existing(data)) => data.ref_count -= 1,
-                Some(SubscriptionState::Pending(data)) => data.ref_count -= 1,
-                None => {}
-            }
-        }
-    }
-}
 
 /// A reference to a "fast callback" subscription that can be used to remove
 /// the said callback.
 /// 
 /// Note that if this value is dropped before calling [`Callback::remove_callback()`],
-/// there will be no way to remove it anymore and the client will never automatically
-/// unsubscribe from the corresponding topic.
+/// there will be no way to remove it anymore.
 /// 
-/// However, it will still be possible to unsubscribe from the topic manually using
-/// [`Client::unsubscribe()`](super::Client::unsubscribe()).
+/// Also note that since v0.2, removing a callback will never cause the client to
+/// unsubscribe from the topic. Instead,
+/// [`Client::unsubscribe()`](super::Client::unsubscribe()) should be used to
+/// unsubscribe from a topic.
 pub struct Callback
 {
     cmd_queue: mpsc::Sender<Command>,

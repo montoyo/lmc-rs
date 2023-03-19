@@ -2,7 +2,7 @@ use std::time::Duration;
 use std::{env, io};
 use std::sync::Once;
 
-use tokio::{time, join};
+use tokio::{time, join, sync::mpsc::error::TryRecvError};
 use log::{debug, error, LevelFilter};
 
 mod mini_broker;
@@ -233,14 +233,17 @@ def_tests! {
 }
 
 def_tests! {
-    /// Validates "hold" subscription. The subscription to the topic should
-    /// not be deleted because a hold reference is leaked.
+    /// Validates "void" subscription.
+    /// 
+    /// This test used to be more meaningful when auto-unsub was still part of LMC and
+    /// "void" subscriptions were called "hold" subscriptions. Now, we're just keeping
+    /// it as another test.
     sub_hold:
     
     async fn client_fn(client: Client, shutdown_handle: ClientShutdownHandle, topic: &str)
     {
         debug!("==> Connected! session_present={}", client.was_session_present());
-        client.subscribe_hold(topic.to_string(), QoS::AtMostOnce).await.unwrap().0.leak();
+        client.subscribe_void(topic.to_string(), QoS::AtMostOnce).await.unwrap();
         assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Live);
 
         let (sub, qos) = client.subscribe_lossy(topic, QoS::ExactlyOnce, 5).await.unwrap();
@@ -250,13 +253,10 @@ def_tests! {
 
         time::sleep(Duration::from_secs(1)).await;
 
-        //Broker will send the following message back to us, triggering an unsub if it
-        //weren't for the hold subscription
         client.publish_qos_0(topic, b"trigger unsub", false).await.unwrap();
         time::sleep(Duration::from_secs(3)).await;
         assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Live);
 
-        //This, however, will force it to unsubscribe
         client.unsubscribe(topic.to_string()).await;
         time::sleep(Duration::from_secs(1)).await;
         assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Absent);
@@ -309,7 +309,6 @@ def_tests! {
         assert_eq!(qos, QoS::AtMostOnce);
         assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Live);
 
-        //Broker will send the following message back to us, triggering an unsub
         client.publish_qos_0(topic, b"test1", false).await.unwrap();
 
         let msg = os_rx.await.unwrap();
@@ -317,9 +316,8 @@ def_tests! {
 
         sub.remove_callback().await;
         client.publish_qos_0(topic, b"test2", false).await.unwrap(); //panic! will occur if callback is called again
+        
         time::sleep(Duration::from_secs(5)).await;
-
-        assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Absent);
         drop(client);
     
         let disconnect_result = shutdown_handle.disconnect().await.unwrap();
@@ -339,9 +337,6 @@ def_tests! {
         let msg1 = broker.recv_message().await?;
         let msg2 = msg1.to_outgoing(sub_qos, false, 1);
         broker.send_message(&msg2).await?;
-
-        let unsub = broker.expect().unsub().await?;
-        broker.send(&UnsubAckPacket::new(unsub.packet_id)).await?;
     
         let msg3 = broker.recv_message().await?;
         let msg4 = msg3.to_outgoing(sub_qos, false, 2);
@@ -382,6 +377,78 @@ def_tests! {
 }
 
 def_tests! {
+    /// Ensure subscriptions to a topic pattern containing wildcards ('*' or '#') work
+    test_wildcard_sub:
+    
+    async fn client_fn(client: Client, shutdown_handle: ClientShutdownHandle, topic: &str)
+    {
+        let mut sub_a = client.subscribe_unbounded(&format!("{}/*", topic), QoS::ExactlyOnce).await.unwrap().0;
+        let mut sub_b1 = client.subscribe_unbounded(&format!("{}/a/*", topic), QoS::ExactlyOnce).await.unwrap().0;
+        let mut sub_b2 = client.subscribe_unbounded(&format!("{}/*/b", topic), QoS::ExactlyOnce).await.unwrap().0;
+        let mut sub_all = client.subscribe_unbounded(&format!("{}/#", topic), QoS::ExactlyOnce).await.unwrap().0;
+
+        let topic_a = format!("{}/a", topic);
+        let topic_b = format!("{}/a/b", topic);
+
+        client.publish_qos_2(&topic_a, b"a", false, PublishEvent::None).await.unwrap();
+
+        for sub in [&mut sub_a, &mut sub_all] {
+            let msg = sub.recv().await.unwrap();
+            debug!("[A] Received {:?} in topic {}", msg.payload(), msg.topic());
+
+            assert_eq!(msg.topic(), topic_a);
+            assert_eq!(msg.payload(), b"a");
+        }
+
+        client.publish_qos_2(&topic_b, b"b", false, PublishEvent::None).await.unwrap();
+
+        for sub in [&mut sub_b1, &mut sub_b2, &mut sub_all] {
+            let msg = sub.recv().await.unwrap();
+            debug!("[B] Received {:?} in topic {}", msg.payload(), msg.topic());
+
+            assert_eq!(msg.topic(), topic_b);
+            assert_eq!(msg.payload(), b"b");
+        }
+
+        //Wait 1 second just in case, then check that all queues are empty
+        time::sleep(Duration::from_secs(1)).await;
+
+        for sub in [&mut sub_a, &mut sub_b1, &mut sub_b2, &mut sub_all] {
+            assert!(matches!(sub.try_recv(), Err(TryRecvError::Empty)));
+        }
+
+        drop(client);
+    
+        let disconnect_result = shutdown_handle.disconnect().await.unwrap();
+        assert_eq!(disconnect_result.disconnect_sent, true);
+        assert_eq!(disconnect_result.clean, true);
+    }
+
+    async fn broker_fn(mut broker: MiniBroker) -> io::Result<()>
+    {
+        broker.expect().connect().await?;
+        broker.send(&ConnAckPacket(Ok(false))).await?;
+        
+        for _ in 0..4 {
+            let sub = broker.expect().subscribe().await?;
+            let sub_qos = sub.topics[0].1;
+
+            broker.send(&SubAckPacket::new(sub.packet_id, &[Ok(sub_qos)])).await?;
+        }
+
+        for pkt_id in 5..7 {
+            let msg_in = broker.recv_message().await?;
+            let msg_out = msg_in.to_outgoing(QoS::ExactlyOnce, false, pkt_id);
+
+            broker.send_message(&msg_out).await?;
+        }
+
+        broker.expect_disconnect().await;
+        Ok(())
+    }
+}
+
+def_tests! {
     /// High-level test validating lmc's basic functionalities.
     complete:
     
@@ -403,7 +470,7 @@ def_tests! {
     
         time::sleep(Duration::from_secs(5)).await;
         client.publish_qos_1(topic, b"byebye1", false, true).await.unwrap();
-        //We will only observe the Unsub at this point
+        client.unsubscribe(topic.to_string()).await;
     
         time::sleep(Duration::from_secs(1)).await;
         client.publish_qos_0(topic, b"byebye2", false).await.unwrap();

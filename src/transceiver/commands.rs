@@ -15,10 +15,9 @@ pub struct FastCallback
 /// All the different ways to subscribe to a topic
 pub enum SubscriptionKind
 {
-    /// Used by so-called "Hold" subscriptions, this will register the
-    /// subscription with the broker (if it wasn't registered already)
-    /// and hold it until the reference count goes back to zero.
-    AddRefOnly,
+    /// Create the subscription only, but ignore incoming messages until
+    /// another non-void subscription is created.
+    Void,
 
     /// Lossy subscriptions use a bounded MPSC channel to handle messages.
     /// If the queue is full, the message will be dropped (which is why it's

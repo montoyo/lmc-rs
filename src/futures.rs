@@ -155,22 +155,22 @@ impl<'a> Future for SubscribeFuture<'a>
         };
 
         match sub_state {
-            SubscriptionState::Existing(data) => {
+            SubscriptionState::Existing(qos) => {
                 //Subscription succeeded
-                let qos = data.qos;
+                let qos = *qos;
                 drop(sub_map);
                 self.as_mut().result = Some(Ok(qos));
 
                 Poll::Ready(Ok(qos))
             },
-            SubscriptionState::Pending(data) => {
+            SubscriptionState::Pending(wakers) => {
                 let waker = Some(cx.waker().clone());
 
                 if let Some(i) = self.waker_index {
-                    data.wakers[i] = waker;
+                    wakers[i] = waker;
                 } else {
-                    let i = data.wakers.len();
-                    data.wakers.push(waker);
+                    let i = wakers.len();
+                    wakers.push(waker);
 
                     drop(sub_map);
                     self.as_mut().waker_index = Some(i);
@@ -189,7 +189,7 @@ impl<'a> Drop for SubscribeFuture<'a>
         if self.result.is_none() {
             if let Some(i) = self.waker_index {
                 match self.client_shared.subs.lock().get_mut(self.topic) {
-                    Some(SubscriptionState::Pending(data)) => data.wakers[i] = None,
+                    Some(SubscriptionState::Pending(wakers)) => wakers[i] = None,
                     _ => {}
                 }
             }

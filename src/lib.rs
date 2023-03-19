@@ -212,43 +212,6 @@ enum PublishEventFuture
     Complete(PublishFuture<CompNotifierMapAccessor>)
 }
 
-/// Utility struct to ensure that a subscription reference is safely released
-/// should the function it is used in return in a unexpected manner (error or
-/// cancelled future).
-struct ReleaseRefOnDrop<'a>
-{
-    release: bool,
-    shared: &'a ClientShared,
-    topic: &'a str
-}
-
-impl<'a> ReleaseRefOnDrop<'a>
-{
-    fn arm(shared: &'a ClientShared, topic: &'a str) -> Self
-    {
-        Self { release: true, shared, topic }
-    }
-
-    fn disarm(mut self)
-    {
-        self.release = false;
-    }
-}
-
-impl<'a> Drop for ReleaseRefOnDrop<'a>
-{
-    fn drop(&mut self)
-    {
-        if self.release {
-            match self.shared.subs.lock().get_mut(self.topic) {
-                Some(SubscriptionState::Existing(data)) => data.ref_count -= 1,
-                Some(SubscriptionState::Pending(data)) => data.ref_count -= 1,
-                None => {}
-            }
-        }
-    }
-}
-
 /// Utility enumeration specifying when to wait for a subscription future.
 enum SubWait
 {
@@ -537,26 +500,17 @@ impl Client
         let mut sub_map = self.shared.subs.lock();
 
         let actual_qos = match sub_map.get_mut(topic) {
-            Some(SubscriptionState::Existing(data)) => {
-                //Add ref, then send command
-                data.ref_count += 1;
-                SubWait::DontWait(data.qos)
-            },
-            Some(SubscriptionState::Pending(data)) => {
-                //Add ref, await result, and only then send command
-                data.ref_count += 1;
-                SubWait::Before
-            },
+            Some(SubscriptionState::Existing(qos)) => SubWait::DontWait(*qos), //Add ref, then send command
+            Some(SubscriptionState::Pending(_))    => SubWait::Before,         //Add ref, await result, and only then send command
             None => {
                 //Create the map entry, then send command, then await result
-                sub_map.insert(topic.into(), PendingSusbcription::with_one_ref().into());
+                sub_map.insert(topic.into(), SubscriptionState::Pending(Vec::new()));
                 SubWait::After
             }
         };
 
         drop(sub_map);
 
-        let release_ref_on_drop = ReleaseRefOnDrop::arm(&self.shared, topic);
         let actual_qos = match actual_qos {
             SubWait::DontWait(x) => Some(x),
             SubWait::Before      => Some(SubscribeFuture::new(&self.shared, topic).await.map_err(|_| SubscribeError::RefusedByBroker)?),
@@ -574,10 +528,6 @@ impl Client
         //Note: we could skip this safely for hold subscriptions if the subscription already exists...
         self.cmd_queue.send(cmd.into()).await.map_err(|_| SubscribeError::TransceiverTaskTerminated)?;
 
-        //At this point, the subscribe command has been successfully sent to the transceiver task.
-        //It will take care of releasing the reference, so we don't need to that anymore.
-        release_ref_on_drop.disarm();
-
         let actual_qos = match actual_qos {
             Some(x) => x,
             None    => SubscribeFuture::new(&self.shared, topic).await.map_err(|_| SubscribeError::RefusedByBroker)?
@@ -586,25 +536,21 @@ impl Client
         Ok((ret, actual_qos))
     }
 
-    /// Creates a [`subs::Hold`] subscription to the specified topic. Hold subscriptions cannot be used to read
-    /// messages, they are only here to prevent the client from unsubscribing from a topic automatically. If you
-    /// wish to read messages, use any other `subscribe` methods.
+    /// Creates a "void" subscription to the specified topic. This will only send a subscription request to the
+    /// broker, and the caller will not have any way to retrieve the messages. If you wish to read messages, use
+    /// any other `subscribe` methods.
     /// 
     /// If the client is already subscribed to the topic, then this function will only wait for a free spot on the
     /// command queue to submit the subscribe command, and will completely ignore `qos_hint`. Otherwise, it will
-    /// send a `SUBSCRIBE` packet to the broker with the specified `qos_hint` and wait for a response. Because the
-    /// returned "hold" subscription will be the sole subscription for this topic, all incoming messages (including
-    /// the retained messages, if any) will be dropped, until a new subscription is created using any of the other
+    /// send a `SUBSCRIBE` packet to the broker with the specified `qos_hint` and wait for a response. Because this
+    /// is "void" subscription will be the sole subscription for this topic, all incoming messages (including the
+    /// retained messages, if any) will be dropped, until a new subscription is created using any of the other
     /// `subscribe` methods.
     /// 
-    /// The returned value contains the subscription object (which can be used to cancel the subscription),
-    /// as well as the actual [`QoS`] of this subscription as specified by the broker.
-    pub async fn subscribe_hold(&self, topic: String, qos_hint: QoS) -> Result<(subs::Hold, QoS), SubscribeError>
+    /// The returned value is the actual [`QoS`] of this subscription as specified by the broker.
+    pub async fn subscribe_void(&self, topic: String, qos_hint: QoS) -> Result<QoS, SubscribeError>
     {
-        let (_, qos) = self.subscribe(&topic, qos_hint, move || ((), SubscriptionKind::AddRefOnly)).await?;
-        let ret = subs::Hold::new(self.shared.clone(), topic);
-
-        Ok((ret, qos))
+        self.subscribe(&topic, qos_hint, move || ((), SubscriptionKind::Void)).await.map(|(_, qos)| qos)
     }
 
     /// Creates a "lossy" subscription to the specified topic, with the specified capacity. "Lossy" subscriptions

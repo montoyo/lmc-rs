@@ -18,17 +18,17 @@ pub mod subscription;
 pub mod commands;
 pub mod packets;
 
-use crate::{QoS, ClientShared, SubscriptionState, ExistingSubscription, NotifyResult, NotifierMap};
+use crate::{QoS, ClientShared, SubscriptionState, NotifyResult, NotifierMap};
 use crate::transport::Transport;
 use crate::errors::ServerConnectError;
 use crate::wrappers::LmcHashMap;
 
 use util::{IdType, panic_in_test};
 use commands::{Command, SubscriptionKind, UnsubKind};
-use subscription::Subscription;
+use subscription::SubscriptionSet;
 use packet_reader::{PacketReader, PacketReadState};
 
-use packets::{IncomingPacket, IncomingPublishPacket, PublishFlags,
+use packets::{IncomingPacket, PublishFlags,
     PingReqPacket, Encode, DisconnectPacket, PubAckPacket, PubRecPacket, PubRelPacket,
     UnsubscribePacket, PacketType, PubCompPacket, SubscribePacket};
 
@@ -134,7 +134,7 @@ pub(super) struct Transceiver
     /// The outgoing packet queue
     internal_pkt_queue: VecDeque<InternalPacket>,
     shared: Arc<ClientShared>,
-    subscriptions: LmcHashMap<String, Subscription>,
+    subscriptions: SubscriptionSet,
     disconnect_sent: bool,
     cmd_queue_closed: bool,
 
@@ -159,22 +159,6 @@ pub(super) struct TransceiverBuildData
     pub ping_interval: Duration,
     pub shared: Arc<ClientShared>,
     pub packet_resend_delay: Duration
-}
-
-/// Describes how a subscribtion's ref count is handled when unsubscribing.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RefCountCheck
-{
-    /// The subscription will only be cancelled if the ref count is zero.
-    Check,
-
-    /// The ref count will not be checked and the subscription will be
-    /// cancelled immediately.
-    Bypass,
-
-    /// The ref count will first be decremented. If the resulting value is
-    /// zero, then the subscription will be cancelled.
-    Release
 }
 
 /// Describes the state in which the client's transceiver task finished.
@@ -234,27 +218,6 @@ impl Transceiver
         self.connect_sig.is_none()
     }
 
-    /// Dispatches a message to all the LMC subscriptions associated to the message's
-    /// topic.
-    fn dispatch_message(&mut self, msg: IncomingPublishPacket) -> io::Result<()>
-    {
-        let topic = msg.topic();
-        let sub = match self.subscriptions.get_mut(topic) {
-            Some(x) => x,
-            None => return Ok(())
-        };
-
-        sub.dispatch(&msg);
-
-        if sub.can_unsub() {
-            //Need to unsubscribe!
-            self.unsub_immediate(topic, RefCountCheck::Check)
-        } else {
-            //Dispatched to at least one recipient; don't unsub
-            Ok(())
-        }
-    }
-
     /// Attempts to transmit the specified packet using [`Self::queue_internal_packet()`], but also
     /// stores for re-transmission (should the server take too long to acknowledge that packet).
     /// 
@@ -284,44 +247,12 @@ impl Transceiver
         }
     }
 
-    /// Performs the ref count check specified by `ref_cnt` (see [`RefCountCheck`]) and,
-    /// if the check succeeds, deletes the subscription and sends an `UNSUB` packet.
-    fn unsub_immediate(&mut self, topic: &str, ref_cnt: RefCountCheck) -> io::Result<()>
+    /// Sends an `UNSUB` packet immediately and deletes the subscription from the shared
+    /// map. Does not touch the internal subscription set.
+    fn unsub_immediate(&mut self, topic: &str) -> io::Result<()>
     {
-        //Start by removing the entry in `ClientShared::subs`, provided all the refs are gone
-        let mut subs = self.shared.subs.lock();
+        self.shared.subs.lock().remove(topic);
 
-        if ref_cnt != RefCountCheck::Bypass {
-            match subs.get_mut(topic) {
-                Some(SubscriptionState::Existing(data)) => {
-                    if ref_cnt == RefCountCheck::Release {
-                        data.ref_count -= 1;
-                    }
-
-                    if data.ref_count > 0 {
-                        return Ok(()); //Can't unsub right now
-                    }
-                },
-                Some(SubscriptionState::Pending(data)) => {
-                    if ref_cnt == RefCountCheck::Release {
-                        data.ref_count -= 1;
-                    }
-
-                    if data.ref_count > 0 {
-                        return Ok(()); //Can't unsub right now
-                    }
-                },
-                None => {}
-            }
-        }
-
-        subs.remove(topic);
-        drop(subs);
-
-        //Continue by removing the entry in `self.subscriptions`
-        self.subscriptions.remove(topic);
-
-        //Finish by sending the `Unsub` packet
         let packet_id = self.shared.next_packet_id.fetch_add(1, Ordering::Relaxed);
         let pkt = UnsubscribePacket { packet_id, topics: &[topic] }.make_arc_packet();
 
@@ -355,43 +286,36 @@ impl Transceiver
                             warn!("Got SubAck with {} results when subscribing to topic \"{}\"; ignoring the others...", ack.sub_results().len(), pending_sub.topic);
                         }
 
-                        let del_refs = match pending_sub.kind {
-                            SubscriptionKind::AddRefOnly => 0,
-                            _ => 1
-                        };
-
                         let opt_wakers = if let Ok(qos) = ack.sub_results()[0] {
+                            match self.subscriptions.get_or_create(&pending_sub.topic) {
+                                Ok(sub) => {
+                                    sub.set_subscribed();
+                                    sub.add(pending_sub.kind);
+                                },
+                                Err(()) => panic_in_test!("Invalid topic \"{}\", this should have failed earlier...", pending_sub.topic)
+                            }
+
                             let mut subs = self.shared.subs.lock();
                             
                             match subs.get_mut(&pending_sub.topic) {
                                 Some(x) => match x {
-                                    SubscriptionState::Existing(data) => {
+                                    SubscriptionState::Existing(existing_qos) => {
                                         panic_in_test!("Got SubAck for topic \"{}\" which already exists!", pending_sub.topic);
-                                        data.ref_count -= del_refs;
-                                        data.qos = qos;
+                                        *existing_qos = qos;
                                         None
                                     },
-                                    SubscriptionState::Pending(data) => {
-                                        let ref_count = data.ref_count - del_refs;
-
-                                        let pending = std::mem::replace(x, SubscriptionState::Existing(ExistingSubscription {
-                                            ref_count,
-                                            qos
-                                        }));
+                                    SubscriptionState::Pending(_) => {
+                                        let pending = std::mem::replace(x, SubscriptionState::Existing(qos));
     
                                         match pending {
-                                            SubscriptionState::Pending(data) => Some(data.wakers),
+                                            SubscriptionState::Pending(wakers) => Some(wakers),
                                             _ => panic!() //Compiler should see that this is impossible -- hopefully?
                                         }
                                     }
                                 },
                                 None => {
                                     panic_in_test!("Got SubAck for topic \"{}\" which is absent from the sub map! Something went wrong!", pending_sub.topic);
-
-                                    subs.insert(pending_sub.topic.clone(), SubscriptionState::Existing(ExistingSubscription {
-                                        ref_count: 1 - del_refs,
-                                        qos
-                                    }));
+                                    subs.insert(pending_sub.topic.clone(), SubscriptionState::Existing(qos));
 
                                     None
                                 }
@@ -402,7 +326,7 @@ impl Transceiver
                                     panic_in_test!("Got SubAck for topic \"{}\", which already exists, and this time the subscription failed!", pending_sub.topic);
                                     None
                                 },
-                                Some(SubscriptionState::Pending(data)) => Some(data.wakers),
+                                Some(SubscriptionState::Pending(wakers)) => Some(wakers),
                                 None => {
                                     panic_in_test!("Got (failed) SubAck for topic \"{}\" which is absent from the sub map! Something went wrong!", pending_sub.topic);
                                     None
@@ -418,8 +342,6 @@ impl Transceiver
                             }
                         }
                     }
-
-                    self.subscriptions.entry(pending_sub.topic).or_default().add(pending_sub.kind);
                 }
             },
             IncomingPacket::Publish(msg) => {
@@ -427,12 +349,12 @@ impl Transceiver
                 debug!("Received Publish with QoS {:?}", info.flags.qos());
 
                 match info.flags.qos() {
-                    QoS::AtMostOnce => self.dispatch_message(msg)?,
+                    QoS::AtMostOnce => self.subscriptions.dispatch(&msg),
                     QoS::AtLeastOnce => {
                         //Reply with PubAck
                         let pkt = PubAckPacket::new(info.packet_id).make_arc_packet();
                         self.queue_internal_packet(pkt, false)?;
-                        self.dispatch_message(msg)?;
+                        self.subscriptions.dispatch(&msg);
                     },
                     QoS::ExactlyOnce => {
                         //Reply with PubRec
@@ -448,7 +370,7 @@ impl Transceiver
                             //If it doesn't, create it, send it, store it, and create a timeout
                             let pkt = PubRecPacket::new(info.packet_id).make_arc_packet();
                             self.queue_internal_packet_with_timeout(pkt, pub_rec_id)?;
-                            self.dispatch_message(msg)?;
+                            self.subscriptions.dispatch(&msg);
                         }
                     }
                 }
@@ -646,21 +568,12 @@ impl Transceiver
                         QoS::AtMostOnce => self.try_send_packet(cmd.packet, false)?,
                         _ => self.queue_internal_packet_with_timeout(cmd.packet, IdType::publish(cmd.packet_id))?
                     },
-                    Some(Command::Subscribe(cmd)) => {
-                        if let Some(sub) = self.subscriptions.get_mut(&cmd.topic) {
-                            if matches!(cmd.kind, SubscriptionKind::AddRefOnly) {
-                                match self.shared.subs.lock().get_mut(&cmd.topic) {
-                                    Some(SubscriptionState::Existing(e)) => e.ref_count += 1,
-                                    Some(SubscriptionState::Pending(p)) => {
-                                        p.ref_count += 1;
-                                        panic_in_test!("Subscription for topic \"{}\" exists in Transceiver::subscription, but is pending in ClientShared::subs. Something went wrong.", cmd.topic);
-                                    },
-                                    None => panic_in_test!("Subscription for topic \"{}\" exists in Transceiver::subscription, but is missing from ClientShared::subs. Something went wrong.", cmd.topic)
-                                }
-                            } else {
-                                sub.add(cmd.kind);
-                            }
-                        } else {
+                    Some(Command::Subscribe(cmd)) => match self.subscriptions.get(&cmd.topic) {
+                        //In theory, this would never get called _while_ the subscription is pending.
+                        //Tasks that want to subscribe have to wait for the subscription to not be pending anymore.
+
+                        Ok(Some(sub)) if sub.is_subscribed() => sub.add(cmd.kind),
+                        Ok(_) => {
                             let packet_id = self.shared.next_packet_id.fetch_add(1, Ordering::Relaxed);
 
                             let pkt = SubscribePacket {
@@ -676,20 +589,19 @@ impl Transceiver
     
                             self.try_send_packet(pkt, false)?;
                             self.timeout_queue.push_back(Timeout::now(IdType::subscribe(packet_id)));
-                        }
+                        },
+                        Err(()) => error!("Cannot subscribe to invalid topic \"{}\"", cmd.topic)
                     },
-                    Some(Command::Unsub(cmd)) => {
-                        if let Some(sub) = self.subscriptions.get_mut(&cmd.topic) {
-                            match cmd.kind {
-                                UnsubKind::FastCallback(id) => {
-                                    sub.remove_fast_callback(id);
-
-                                    if sub.can_unsub() {
-                                        self.unsub_immediate(&cmd.topic, RefCountCheck::Check)?
-                                    }
-                                },
-                                UnsubKind::Immediate => self.unsub_immediate(&cmd.topic, RefCountCheck::Bypass)?
-                            }
+                    Some(Command::Unsub(cmd)) => match cmd.kind {
+                        UnsubKind::FastCallback(id) => match self.subscriptions.get(&cmd.topic) {
+                            Ok(Some(sub)) => sub.remove_fast_callback(id),
+                            Ok(None)      => {},
+                            Err(())       => error!("Cannot remove fast callback from invalid topic \"{}\"", cmd.topic)
+                        },
+                        UnsubKind::Immediate => match self.subscriptions.clear(&cmd.topic) {
+                            Ok(true)  => self.unsub_immediate(&cmd.topic)?,
+                            Ok(false) => {},
+                            Err(())   => error!("Cannot unsubscribe from invalid topic \"{}\"", cmd.topic)
                         }
                     },
                     Some(Command::Disconnect) => return Ok(TaskState::WantStop),
@@ -887,8 +799,8 @@ impl Transceiver
         Self::fail_notify_map(&self.shared.notify_comp, &mut wakers);
 
         for (_, sub) in self.shared.subs.lock().drain() {
-            if let SubscriptionState::Pending(pending_sub) = sub {
-                wakers.extend(pending_sub.wakers.into_iter().filter_map(|x| x));
+            if let SubscriptionState::Pending(sub_wakers) = sub {
+                wakers.extend(sub_wakers.into_iter().filter_map(|x| x));
             }
         }
 

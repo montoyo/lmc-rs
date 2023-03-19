@@ -2,7 +2,6 @@ use std::task::Waker;
 use std::sync::atomic::{AtomicU16, AtomicU32};
 
 use crate::QoS;
-use crate::transceiver::util::def_enum_with_intos;
 use crate::wrappers::{LmcHashMap, LmcMutex};
 
 /// Describes awaiting states associated with a packet ID in a [`NotifierMap`]
@@ -37,59 +36,19 @@ pub enum NotifyResult
 /// got cancelled).
 pub type NotifierMap = LmcMutex<LmcHashMap<u16, NotifyResult>>;
 
-/// A subscription that has been validated by the broker
-pub struct ExistingSubscription
+/// The value of an entry in the subscription map, describing the
+/// state of the susbcription.
+pub enum SubscriptionState
 {
-    /// The number of references keeping the subscribtion alive.
-    /// 
-    /// If this value drops down to zero, and if there are no
-    /// other reasons (such as alive MPSC channels) to keep
-    /// the subscriptions alive, the transceiver task will
-    /// automatically unsubscribe from the topic.
-    pub ref_count: i32,
+    /// The subscription exists and has been validated by the broker.
+    /// The value is the [`QoS`] of the subscription as defined by
+    /// the broker.
+    Existing(QoS),
 
-    /// The [`QoS`] of the subscription, as returned by the
-    /// server in the `SUBACK` packet.
-    pub qos: QoS
-}
-
-/// A subscription that has yet to be validated by the broker
-/// and that can be awaited on.
-pub struct PendingSusbcription
-{
-    /// The number of references that will keep the subscribtion
-    /// alive. It has no real meaning while in [`PendingSusbcription`],
-    /// however this value will be transferred over to
-    /// [`ExistingSubscription`].
-    pub ref_count: i32,
-
-    /// A list of wakers awaiting this subscription. Values should
-    /// never be removed from this list as futures use the waker
-    /// index to update it. Instead, values can be changed to [`None`].
-    pub wakers: Vec<Option<Waker>>
-}
-
-impl PendingSusbcription
-{
-    /// Instantiates a [`PendingSusbcription`] with a single reference
-    /// and no wakers.
-    pub fn with_one_ref() -> Self
-    {
-        Self { ref_count: 1, wakers: Vec::new() }
-    }
-}
-
-def_enum_with_intos! {
-    /// The value of an entry in the subscription map, describing the
-    /// state of the susbcription.
-    pub enum SubscriptionState
-    {
-        /// The subscription that has been validated by the broker
-        Existing(ExistingSubscription),
-
-        /// The subscription has yet to be validated by the broker
-        Pending(PendingSusbcription)
-    }
+    /// The subscription has yet to be validated by the broker.
+    /// The value is a list of wakers waiting on the subscription
+    /// to be established.
+    Pending(Vec<Option<Waker>>)
 }
 
 /// Shared information between the [`super::Client`] and the

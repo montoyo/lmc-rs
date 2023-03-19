@@ -5,6 +5,7 @@ use log::warn;
 use super::util::panic_in_test;
 use super::packets::IncomingPublishPacket;
 use super::commands::{FastCallback, SubscriptionKind};
+use crate::wrappers::LmcHashMap;
 
 /// Store a subscription's MPSC queues and fast callbacks.
 #[derive(Default)]
@@ -20,7 +21,12 @@ pub struct Subscription
     unbounded_queue: Vec<mpsc::UnboundedSender<IncomingPublishPacket>>,
 
     /// [`Vec`] of callback functions ordered by their IDs.
-    fast_callbacks: Vec<FastCallback>
+    fast_callbacks: Vec<FastCallback>,
+
+    /// Flag to indicate that the client is currently subscribed to the topic.
+    /// If false, all collections (`lossy_queue`, `unbounded_queue`, `fast_callbacks`)
+    /// should be empty.
+    subscribed: bool
 }
 
 /// Calls a predicate on each values of the provided [`Vec`], and removes
@@ -42,15 +48,6 @@ fn prune<T, P: FnMut(&T) -> bool>(vec: &mut Vec<T>, mut predicate: P)
 
 impl Subscription
 {
-    /// Ensures that there a no more queues or fast callbacks in this subscription. That still does not
-    /// mean the transceiver can unsubscribe automatically; `ref_count` needs to be checked in the
-    /// client's shared data.
-    #[inline]
-    pub fn can_unsub(&self) -> bool
-    {
-        self.lossy_queue.is_empty() && self.unbounded_queue.is_empty() && self.fast_callbacks.is_empty()
-    }
-
     /// Dispatches a message to all queues and callbacks in this subscription. Queues that are closed
     /// are removed from this susbscription object.
     /// 
@@ -100,10 +97,213 @@ impl Subscription
     pub fn add(&mut self, kind: SubscriptionKind)
     {
         match kind {
-            SubscriptionKind::AddRefOnly       => {},
+            SubscriptionKind::Void             => {},
             SubscriptionKind::Lossy(queue)     => self.lossy_queue.push(queue),
             SubscriptionKind::Unbounded(queue) => self.unbounded_queue.push(queue),
             SubscriptionKind::FastCallback(cb) => self.add_fast_callback(cb)
         }
+    }
+
+    fn clear(&mut self)
+    {
+        self.lossy_queue.clear();
+        self.unbounded_queue.clear();
+        self.fast_callbacks.clear();
+        self.subscribed = false;
+    }
+
+    pub fn set_subscribed(&mut self)
+    {
+        self.subscribed = true;
+    }
+
+    pub fn is_subscribed(&self) -> bool
+    {
+        self.subscribed
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TopicSlicer<'a>
+{
+    head: &'a str,
+    tail: Option<&'a str>
+}
+
+impl<'a> TopicSlicer<'a>
+{
+    fn new(s: &'a str) -> Self
+    {
+        if let Some(head_pos) = s.find('/') {
+            let head = &s[..head_pos];
+            let tail = &s[head_pos + 1..];
+
+            Self { head, tail: Some(tail) }
+        } else {
+            Self { head: s, tail: None }
+        }
+    }
+
+    fn tail(self) -> Option<Self>
+    {
+        self.tail.map(Self::new)
+    }
+}
+
+#[derive(Default)]
+struct SubscriptionSetNode
+{
+    exact: LmcHashMap<String, Box<SubscriptionSetEntry>>,
+    any: Option<Box<SubscriptionSetEntry>>,
+    any_recursive: Subscription
+}
+
+#[derive(Default)]
+struct SubscriptionSetEntry
+{
+    sub: Subscription,
+    children: SubscriptionSetNode
+}
+
+impl SubscriptionSetEntry
+{
+    fn dispatch(&mut self, tail: Option<TopicSlicer>, msg: &IncomingPublishPacket)
+    {
+        if let Some(sub_topic) = tail {
+            self.children.dispatch(sub_topic, msg);
+        } else {
+            self.sub.dispatch(msg);
+        }
+    }
+}
+
+impl SubscriptionSetNode
+{
+    fn dispatch(&mut self, topic: TopicSlicer, msg: &IncomingPublishPacket)
+    {
+        //We assume that `elements.len() > 0`
+        self.any_recursive.dispatch(msg);
+
+        if let Some(any) = &mut self.any {
+            any.dispatch(topic.tail(), msg);
+        }
+
+        if let Some(exact) = self.exact.get_mut(topic.head) {
+            exact.dispatch(topic.tail(), msg);
+        }
+    }
+
+    fn get_or_create_exact(&mut self, k: &str) -> &mut SubscriptionSetEntry
+    {
+        /*
+        //So, Rust can be really retarded sometimes and this does not work:
+        if let Some(exact) = self.exact.get_mut(k) {
+            return exact;
+        }
+
+        //The only alternative (apparently) is this:
+        if self.exact.contains_key(k) {
+            return self.exact.get_mut(k).unwrap();
+        }
+
+        //...which causes two hashmap lookups, which I don't like, so might as well just do this:
+        */
+
+        self.exact
+            .entry(k.to_string())
+            .or_insert_with(|| Box::new(Default::default()))
+    }
+}
+
+#[derive(Default)]
+pub struct SubscriptionSet
+{
+    root: SubscriptionSetNode
+}
+
+impl SubscriptionSet
+{
+    pub fn dispatch(&mut self, msg: &IncomingPublishPacket)
+    {
+        let topic = TopicSlicer::new(msg.topic());
+        self.root.dispatch(topic, msg);
+    }
+
+    pub fn get_or_create(&mut self, topic: &str) -> Result<&mut Subscription, ()>
+    {
+        let mut topic_slicer = TopicSlicer::new(topic);
+        let mut node = &mut self.root;
+
+        while let Some(tail) = topic_slicer.tail() {
+            if topic_slicer.head == "#" {
+                return Err(());
+            }
+
+            node = if topic_slicer.head == "*" {
+                &mut node.any.get_or_insert_with(|| Box::new(Default::default())).as_mut().children
+            } else {
+                &mut node.get_or_create_exact(topic_slicer.head).children
+            };
+
+            topic_slicer = tail;
+        }
+
+        if topic_slicer.head == "#" {
+            Ok(&mut node.any_recursive)
+        } else if topic_slicer.head == "*" {
+            let entry = node.any.get_or_insert_with(|| Box::new(Default::default())).as_mut();
+            Ok(&mut entry.sub)
+        } else {
+            let entry = node.get_or_create_exact(topic_slicer.head);
+            Ok(&mut entry.sub)
+        }
+    }
+
+    pub fn get(&mut self, topic: &str) -> Result<Option<&mut Subscription>, ()>
+    {
+        let mut topic_slicer = TopicSlicer::new(topic);
+        let mut node = &mut self.root;
+
+        while let Some(tail) = topic_slicer.tail() {
+            if topic_slicer.head == "#" {
+                return Err(());
+            }
+
+            node = if topic_slicer.head == "*" {
+                match &mut node.any {
+                    Some(entry) => &mut entry.children,
+                    None => return Ok(None)
+                }
+            } else {
+                match node.exact.get_mut(topic_slicer.head) {
+                    Some(entry) => &mut entry.children,
+                    None => return Ok(None)
+                }
+            };
+
+            topic_slicer = tail;
+        }
+
+        if topic_slicer.head == "#" {
+            Ok(Some(&mut node.any_recursive))
+        } else if topic_slicer.head == "*" {
+            Ok(node.any.as_mut().map(|entry| &mut entry.sub))
+        } else {
+            Ok(node.exact.get_mut(topic_slicer.head).map(|entry| &mut entry.sub))
+        }
+    }
+
+    pub fn clear(&mut self, topic: &str) -> Result<bool, ()>
+    {
+        //TODO: Delete useless nodes
+
+        if let Some(sub) = self.get(topic)? {
+            if sub.is_subscribed() {
+                sub.clear();
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 }

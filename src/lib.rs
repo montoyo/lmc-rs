@@ -64,20 +64,23 @@ shutdown_handle.disconnect().await.expect("Could not disconnect gracefully");
 //!  - [`Client::subscribe_fast_callback()`] will cause the passed function to be called every time a message is
 //!    received. However, the function must be thread-safe and cannot block.
 //! 
-//! There is also [`Client::subscribe_hold()`], which cannot be used to read messages but can be used to prevent
-//! the client from unsubscribing from a topic automatically.
+//! There is also [`Client::subscribe_void()`], which can be used to only establish an MQTT subscription with the
+//! broker. However, none of the messages can be obtained until a normal LMC subscription is created (including
+//! retained messages). This might be used if you wish to "pre-subscribe" to a topic, but only occasionally care
+//! about the messages.
 //! 
 //! Note that LMC subscriptions and MQTT subscriptions are not the same thing. LMC subscriptions are created using
 //! any of the `subscribe` methods. MQTT subscriptions are created by the implementation, as a result of the creation
 //! of an LMC subscription to a **new** topic. If an LMC subscription exists for a given topic, that means that an MQTT
 //! subscription already exists and there is thus no need to create a new one. This does mean that **only the first
 //! LMC subscription will receive the retained messages** of a particular topic (if there are any). So, if the first
-//! subscription is a "hold" subscription, retained messages will be lost.
+//! subscription is a "void" subscription, retained messages will be lost.
 //! 
-//! MQTT subscriptions will only be cancelled (unsubscribed) if there are no more valid LMC subscription for that topic,
-//! or if [`Client::unsubscribe()`] is called directly. Note that automatic unsubscribe can only be triggered by removing
-//! a fast callback subscription or by an incoming message in that topic. This is because the transceiver task does not
-//! actively check if subscription queues are closed.
+//! MQTT subscriptions can only be cancelled (unsubscribed) by calling [`Client::unsubscribe()`] directly. Since v0.2,
+//! LMC will not automatically unsubscribe from topics anymore. This means that even after dropping the MPSC channels
+//! of lossy & unlossy subscriptions, and removing fast callback subscriptions, the MQTT subscription with the broker
+//! is maintained but the messages will be ignored (effectively becoming a "void" subscription) until
+//! [`Client::unsubscribe()`] is called.
 
 #![feature(new_uninit)]
 #![feature(get_mut_unchecked)]
@@ -567,8 +570,8 @@ impl Client
     /// is full.
     /// 
     /// The returned value contains the [`mpsc::Receiver`] end of the queue as well as the actual [`QoS`] of this
-    /// subscription as specified by the broker. If the receiving end of the queue is closed (by dropping it for
-    /// instance), then the client may unsubscribe from the topic.
+    /// subscription as specified by the broker. Since v0.2, closing the receiving end of the queue **will not**
+    /// cause the client to unsubscribe. To unsubscribe from a topic, use [`Client::unsubscribe()`].
     pub fn subscribe_lossy<'a>(&'a self, topic: &'a str, qos_hint: QoS, queue_cap: usize) -> impl Future<Output = Result<(mpsc::Receiver<Message>, QoS), SubscribeError>> + 'a
     {
         self.subscribe(topic, qos_hint, move || {
@@ -587,8 +590,8 @@ impl Client
     /// retained packets (if there are any) are guarateed to be pushed onto the returned queue.
     /// 
     /// The returned value contains the [`mpsc::UnboundedReceiver`] end of the queue as well as the actual [`QoS`]
-    /// of this subscription as specified by the broker. If the receiving end of the queue is closed (by dropping it
-    /// for instance), then the client may unsubscribe from the topic.
+    /// of this subscription as specified by the broker. Since v0.2, closing the receiving end of the queue **will
+    /// not** cause the client to unsubscribe. To unsubscribe from a topic, use [`Client::unsubscribe()`].
     pub fn subscribe_unbounded<'a>(&'a self, topic: &'a str, qos_hint: QoS) -> impl Future<Output = Result<(mpsc::UnboundedReceiver<Message>, QoS), SubscribeError>> + 'a
     {
         self.subscribe(topic, qos_hint, move || {

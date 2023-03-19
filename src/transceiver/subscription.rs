@@ -8,6 +8,7 @@ use super::commands::{FastCallback, SubscriptionKind};
 use crate::wrappers::LmcHashMap;
 
 /// Store a subscription's MPSC queues and fast callbacks.
+/// Leaf in the subscriptions tree.
 #[derive(Default)]
 pub struct Subscription
 {
@@ -104,6 +105,8 @@ impl Subscription
         }
     }
 
+    /// Removes all subscriptions associated with this subscription object and
+    /// clears the `subscribed` flag.
     fn clear(&mut self)
     {
         self.lossy_queue.clear();
@@ -123,6 +126,9 @@ impl Subscription
     }
 }
 
+/// Utility struct to split topic strings on slashes. `head`
+/// contains the first component, while `tail` contains the
+/// rest of the topic path.
 #[derive(Clone, Copy)]
 struct TopicSlicer<'a>
 {
@@ -150,18 +156,29 @@ impl<'a> TopicSlicer<'a>
     }
 }
 
+/// The first piece of a node in the subscription tree
 #[derive(Default)]
 struct SubscriptionSetNode
 {
+    /// Entries that correspond to a regular (non-wildcard) path component.
     exact: LmcHashMap<String, Box<SubscriptionSetEntry>>,
+
+    /// Entry that corresponds to the wildcard ('*') path component, if any.
     any: Option<Box<SubscriptionSetEntry>>,
+
+    /// Subscription object (leaf) that corresponds to the recursive wildcard
+    /// ('#') path component.
     any_recursive: Subscription
 }
 
+/// The second piece of a node in the subscription tree
 #[derive(Default)]
 struct SubscriptionSetEntry
 {
+    /// The subscription object (leaf) corresponding to this node
     sub: Subscription,
+
+    /// Child nodes
     children: SubscriptionSetNode
 }
 
@@ -215,6 +232,7 @@ impl SubscriptionSetNode
     }
 }
 
+/// Root struct of the subscription tree
 #[derive(Default)]
 pub struct SubscriptionSet
 {
@@ -223,12 +241,18 @@ pub struct SubscriptionSet
 
 impl SubscriptionSet
 {
+    /// Dispatches a message to the receivers matching the message's topic.
     pub fn dispatch(&mut self, msg: &IncomingPublishPacket)
     {
         let topic = TopicSlicer::new(msg.topic());
         self.root.dispatch(topic, msg);
     }
 
+    /// Gets the subscription object corresponding the provided topic pattern.
+    /// Creates it if it doesn't already exist.
+    /// 
+    /// Returns `Err(())` if the topic pattern is invalid (for instance, if a '#'
+    /// is used before the end of the topic path).
     pub fn get_or_create(&mut self, topic: &str) -> Result<&mut Subscription, ()>
     {
         let mut topic_slicer = TopicSlicer::new(topic);
@@ -259,6 +283,15 @@ impl SubscriptionSet
         }
     }
 
+    /// Gets the subscription object corresponding the provided topic pattern.
+    /// 
+    /// Returns `Ok(Some(_))` if the subscription object exists, `Ok(None)` if
+    /// it does not, and `Err(())` if the topic pattern is invalid (for instance,
+    /// if a '#' is used before the end of the topic path).
+    /// 
+    /// Note that if a value is returned, it doesn't necessarily mean that the
+    /// client has subscribed to this topic. For that, check
+    /// [`Subscription::is_subscribed()`].
     pub fn get(&mut self, topic: &str) -> Result<Option<&mut Subscription>, ()>
     {
         let mut topic_slicer = TopicSlicer::new(topic);
@@ -293,6 +326,15 @@ impl SubscriptionSet
         }
     }
 
+    /// Removes all subscriptions contained in the subscription object corresponding
+    /// the provided topic pattern.
+    /// 
+    /// Returns `Ok(true)` if the subscription object exists, was subscribed and was
+    /// cleared, `Ok(false)` otherwise or `Err(())` if the topic pattern is invalid
+    /// (for instance, if a '#' is used before the end of the topic path).
+    /// 
+    /// This function has yet to delete intermediate nodes if they do not contain
+    /// any subscription. This will be fixed in a future version of LMC.
     pub fn clear(&mut self, topic: &str) -> Result<bool, ()>
     {
         //TODO: Delete useless nodes

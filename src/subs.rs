@@ -5,11 +5,12 @@ use super::transceiver::commands::{Command, UnsubCommand, UnsubKind};
 /// the said callback.
 /// 
 /// Note that if this value is dropped before calling [`Callback::remove_callback()`],
-/// there will be no way to remove it anymore and the client will never automatically
-/// unsubscribe from the corresponding topic.
+/// there will be no way to remove it anymore.
 /// 
-/// However, it will still be possible to unsubscribe from the topic manually using
-/// [`Client::unsubscribe()`](super::Client::unsubscribe()).
+/// Also note that since v0.2, removing a callback will never cause the client to
+/// unsubscribe from the topic. Instead,
+/// [`Client::unsubscribe()`](super::Client::unsubscribe()) should be used to
+/// unsubscribe from a topic.
 pub struct Callback
 {
     cmd_queue: mpsc::Sender<Command>,

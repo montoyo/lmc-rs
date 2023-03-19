@@ -309,7 +309,6 @@ def_tests! {
         assert_eq!(qos, QoS::AtMostOnce);
         assert_eq!(client.get_subscription_status(topic), SubscriptionStatus::Live);
 
-        //Broker will send the following message back to us, triggering an unsub
         client.publish_qos_0(topic, b"test1", false).await.unwrap();
 
         let msg = os_rx.await.unwrap();

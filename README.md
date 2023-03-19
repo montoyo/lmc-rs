@@ -19,7 +19,7 @@ First, add the crate to your dependencies in `Cargo.toml`:
 
 ```toml
 [dependencies.lmc]
-version = "^0.1"
+version = "^0.2"
 features = ["tls"] # See below for available features
 ```
 
